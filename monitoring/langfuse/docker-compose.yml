@@ -1,0 +1,57 @@
+#=========================== begin_copyright_notice ============================
+#
+# Copyright (C) 2026 Intel Corporation
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+#============================ end_copyright_notice =============================
+
+version: "3.9"
+
+# Langfuse self-hosted for AgentSysPerf trace analytics
+# Runs on http://localhost:7862 (override with $LANGFUSE_HOST)
+#
+# Start:  docker compose -f monitoring/langfuse/docker-compose.yml up -d
+# Stop:   docker compose -f monitoring/langfuse/docker-compose.yml down
+# Logs:   docker compose -f monitoring/langfuse/docker-compose.yml logs -f langfuse-web
+
+services:
+  langfuse-web:
+    image: langfuse/langfuse:3
+    ports:
+      - "7862:3000"
+    environment:
+      - DATABASE_URL=postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
+      - NEXTAUTH_URL=${LANGFUSE_HOST:-http://localhost:7862}
+      # These sign session cookies and hash API keys. The defaults are public
+      # in this repo, so anyone can forge a session against a deployment that
+      # keeps them -- fine for a localhost-only dev instance, not otherwise.
+      # Override both before exposing this service on any network:
+      #   export LANGFUSE_NEXTAUTH_SECRET=$(openssl rand -base64 32)
+      #   export LANGFUSE_SALT=$(openssl rand -base64 32)
+      - NEXTAUTH_SECRET=${LANGFUSE_NEXTAUTH_SECRET:-agentsysperf-langfuse-dev-only}
+      - SALT=${LANGFUSE_SALT:-agentsysperf-salt-dev-only}
+      - TELEMETRY_ENABLED=false
+      - LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES=false
+    depends_on:
+      langfuse-db:
+        condition: service_healthy
+    restart: unless-stopped
+
+  langfuse-db:
+    image: postgres:alpine
+    environment:
+      - POSTGRES_USER=langfuse
+      - POSTGRES_PASSWORD=langfuse
+      - POSTGRES_DB=langfuse
+    volumes:
+      - langfuse_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U langfuse"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  langfuse_pg_data:

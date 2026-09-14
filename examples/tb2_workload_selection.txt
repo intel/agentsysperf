@@ -1,0 +1,123 @@
+# Terminal-Bench 2: Curated Workload Selection for Xeon EMR Benchmarking
+#
+# 15 CPU-centric tasks organized by computational intensity
+# Selection criteria: duration, execution%, CPU utilization, avoiding network-heavy tasks
+
+# ==============================================================================
+# LIGHT WORKLOAD (5 tasks)
+# Characteristics: <10s duration, <20% execution time, simple shell commands
+# ==============================================================================
+
+terminal-bench/count-vowels
+# Description: Count vowels in text file using grep/wc
+# Rationale: Simple file I/O + text processing, minimal CPU load
+# Expected: inference_dominant (~95%), io_bound classification
+
+terminal-bench/find-largest-file
+# Description: Find largest file in directory tree using du/sort
+# Rationale: Filesystem traversal, low CPU, high I/O
+# Expected: inference_dominant, l3_resident (small working set)
+
+terminal-bench/extract-emails
+# Description: Extract email addresses from log files using grep/sed
+# Rationale: Regex pattern matching on moderate file size
+# Expected: inference_heavy (~90%), low cache pressure
+
+terminal-bench/list-permissions
+# Description: List file permissions recursively and format output
+# Rationale: Simple stat() system calls, formatting overhead
+# Expected: io_bound, orchestration ~10% (formatting)
+
+terminal-bench/count-http-codes
+# Description: Parse nginx access log, count HTTP status codes
+# Rationale: Text parsing with awk/sort/uniq pipeline
+# Expected: execution ~15-20% (awk processing), rest inference
+
+# ==============================================================================
+# MEDIUM WORKLOAD (5 tasks)
+# Characteristics: 10-60s duration, 20-60% execution time, mixed compute + I/O
+# ==============================================================================
+
+terminal-bench/json-transformation
+# Description: Transform large JSON dataset (10K records) with jq
+# Rationale: JSON parsing + transformation, moderate CPU + memory
+# Expected: execution ~30-40%, memory_bound_likely (large working set)
+
+terminal-bench/csv-aggregate
+# Description: Aggregate CSV data with grouping and calculations
+# Rationale: In-memory data structure manipulation (Python/awk)
+# Expected: execution ~40%, core_bound on aggregation phase
+
+terminal-bench/log-analysis
+# Description: Parse multi-GB log file, extract patterns, generate summary
+# Rationale: Streaming I/O + regex processing, sustained CPU
+# Expected: execution ~50%, balanced (I/O + compute)
+
+terminal-bench/markdown-to-html
+# Description: Convert markdown files to HTML with pandoc
+# Rationale: Text transformation, moderate computation
+# Expected: execution ~35%, core_bound during rendering
+
+terminal-bench/data-validation
+# Description: Validate structured data against schema (1000s of records)
+# Rationale: Schema checking, JSON parsing, error reporting
+# Expected: execution ~45%, orchestration ~15% (error handling)
+
+# ==============================================================================
+# HEAVY WORKLOAD (5 tasks)
+# Characteristics: >60s duration OR >60% execution time, sustained CPU load
+# ==============================================================================
+
+terminal-bench/make-mips-interpreter
+# Description: Implement MIPS CPU interpreter in JavaScript to run Doom
+# Rationale: CPU emulation, instruction decode, syscall handling
+# Expected: execution_dominant (>70%), core_bound, high IPC, 10-30 min duration
+# Known result: 43s (Phase C test), but that was with GPT-4o-mini timeout
+
+terminal-bench/circuit-fibsqrt
+# Description: Design logic gate circuit computing fib(isqrt(N))
+# Rationale: Circuit simulation, Fibonacci computation, iterative logic
+# Expected: execution_dominant (>65%), core_bound, sustained CPU, 5-15 min
+
+terminal-bench/compile-c-module
+# Description: Compile C source with gcc, debug linking errors
+# Rationale: Compilation workload, CPU-intensive (gcc backend)
+# Expected: execution ~60%, core_bound, high IPC on optimization passes
+
+terminal-bench/compress-decompress
+# Description: Compress large files with different algorithms, compare
+# Rationale: gzip/bzip2/xz compression CPU-bound, high throughput
+# Expected: execution_dominant (>70%), core_bound, memory_bound on large buffers
+
+terminal-bench/hash-computation
+# Description: Compute SHA256 hashes for directory tree, detect duplicates
+# Rationale: Cryptographic hashing CPU-bound, high IPC
+# Expected: execution_dominant (>75%), core_bound, sustained throughput
+
+# ==============================================================================
+# NOTES FOR BENCHMARK EXECUTION
+# ==============================================================================
+
+# Expected runtime (15 tasks, gpt-4o-mini, max-turns=20):
+# - Light: 5 tasks × ~8s = 40s
+# - Medium: 5 tasks × ~45s = 225s (~4 min)
+# - Heavy: 5 tasks × ~600s = 3000s (~50 min)
+# Total: ~55 min (assumes some task failures hit max timeout)
+
+# Hardware context:
+# - Intel Xeon Platinum 8592+ (Emerald Rapids)
+# - 112 cores, 2.0-3.9 GHz
+# - L3: 350 MB (large enough for most tasks → l3_resident verdict)
+# - Memory: 512 GB DDR5-4800
+# - Storage: NVMe (low I/O wait)
+
+# Expected breakdown patterns:
+# - Light: inference 90-98%, execution <10%
+# - Medium: inference 40-70%, execution 30-50%
+# - Heavy: execution 60-80%, inference 15-30%
+
+# Xeon EMR advantages to highlight in report:
+# - High IPC (>1.5) on CPU-bound tasks
+# - Large L3 cache reduces memory bottlenecks
+# - High memory bandwidth (DDR5-4800) for heavy workloads
+# - Turbo boost helps single-threaded compilation/hashing

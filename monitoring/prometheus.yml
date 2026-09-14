@@ -1,0 +1,27 @@
+#=========================== begin_copyright_notice ============================
+#
+# Copyright (C) 2026 Intel Corporation
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+#============================ end_copyright_notice =============================
+
+# Prometheus scrape config for AgentSysPerf.
+#
+# Benchmark runs are short-lived, so metrics are PUSHED to the Pushgateway
+# and Prometheus scrapes the gateway. honor_labels=true preserves the
+# run_id/task_id/layer labels embedded in the pushed metric text rather than
+# overwriting them with the gateway target labels.
+global:
+  scrape_interval: 5s
+  evaluation_interval: 5s
+
+scrape_configs:
+  - job_name: pushgateway
+    honor_labels: true
+    static_configs:
+      - targets: ['pushgateway:9091']
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ['localhost:9090']

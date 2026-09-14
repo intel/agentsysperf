@@ -1,0 +1,241 @@
+#=========================== begin_copyright_notice ============================
+#
+# Copyright (C) 2026 Intel Corporation
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+#============================ end_copyright_notice =============================
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentsysperf"
+version = "1.0.0"
+description = "Pluggable benchmark suite for end-to-end agentic AI stacks"
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.12,<3.15"
+authors = [
+    { name = "AgentSysPerf authors" },
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+]
+dependencies = [
+    "fastapi>=0.136.0",
+    "uvicorn>=0.47.0",
+    "httpx>=0.28.0",
+    "pydantic>=2.13.0",
+    "PyYAML>=6.0.3",
+    "psutil>=7.2.0",
+    "numpy>=2.4.0",
+    # torch / transformers moved to the [inference] extra — see the note there.
+    # accelerate removed: imported nowhere in the repo; it only forced torch in.
+    # rich<15: pyiceberg (pulled transitively via harbor) requires rich<15.0.0.
+    "rich>=14.0.0,<15.0.0",
+    # packaging>=25: required by harbor 0.8.0.
+    "packaging>=25.0",
+    "typer>=0.25.0",
+    # >=1.73.0: first release shipping the "langfuse_otel" callback the trace
+    # extra registers (src/trace/langfuse_setup.py). Older litellm only
+    # has the v2 "langfuse" callback, which would silently no-op with langfuse 3.
+    "litellm>=1.73.0",
+    "harbor>=0.8.0",
+    "scikit-learn>=1.8.0",
+    "pandas>=2.0.0",
+    "python-pptx>=1.0.0",
+    "matplotlib>=3.8.0",
+    "seaborn>=0.13.0",
+    "pyarrow>=14.0.0",
+    "streamlit>=1.40.0",
+    "plotly>=5.24.0",
+]
+
+[project.optional-dependencies]
+# `pip install -e ".[dev]"` must be able to run the WHOLE suite, so anything a
+# test imports belongs here. plotly was previously only in [dashboard], which
+# made `pytest` fail at collection on a [dev] install:
+# dashboard/test_scaling_views.py imports plotly.graph_objects.
+dev = ["pytest>=7.4", "ruff>=0.5", "plotly>=5.24.0"]
+# Streamlit demo/live dashboards (demo_app.py, live_dashboard.py).
+dashboard = ["streamlit>=1.40.0", "plotly>=5.24.0"]
+# Local model inference: the six-phase agent's Reason phase and GPU/vLLM-served
+# benchmarking. NOT core, deliberately:
+#   - No module under src/ imports torch, transformers or accelerate
+#     (measured: 0 files each). The only torch use in the repo,
+#     examples/run_six_phase_sweep.py, already guards it with try/except.
+#   - `pip show torch` reports "Required-by: accelerate, agentsysperf" — nothing
+#     transitive needs it, not litellm and not harbor. It was installed solely
+#     because it was declared here.
+#   - It costs 4.5 GB of a 5.8 GB venv (torch 1.1G + nvidia 2.7G + triton 691M),
+#     and on a box with no GPU that CUDA runtime is not merely wasted: it can
+#     change threading defaults and BLAS selection on a suite whose entire
+#     output is CPU performance numbers.
+# Measured: with these out, the full suite still passes 408/408 in a 975 MB venv.
+# Install deliberately when doing GPU / vLLM work: pip install -e ".[inference]"
+inference = ["torch>=2.12.0", "transformers>=5.9.0"]
+# Langfuse step-trace export (src/trace/langfuse_setup.py).
+# v3 SDK: langfuse 2.x hard-caps packaging<25 / httpx<0.26, which conflict with
+# core deps (harbor needs packaging>=25, httpx>=0.28) — so 2.x is unsatisfiable.
+# LiteLLM's "langfuse_otel" callback (used in langfuse_setup) targets the v3 SDK.
+trace = ["langfuse>=3,<4"]
+# Read-side analytical accelerator (src/storage/duckdb_analytics.py).
+# DuckDB ATTACHes the SQLite store (zero copy) for wide cross-run aggregation;
+# measured to beat row-store SQLite above ~10-15k rows. pyarrow is already a
+# core dep (Parquet export). Optional — core + dashboards never import it.
+analytics = ["duckdb>=1.0"]
+
+[project.scripts]
+agentsysperf = "src.cli:main"
+
+[tool.pytest.ini_options]
+# Tests are co-located with the code they cover (src/**/test_*.py).
+testpaths = ["src"]
+python_files = ["test_*.py"]
+addopts = "-q"
+markers = [
+    # Asserts on CPU utilization / runqueue thresholds, so it measures ambient
+    # load as much as the code. Fails non-deterministically on a shared box —
+    # WHICH of the three fails varies per run — so CI deselects it rather than
+    # letting a real gate flake. Run it deliberately on a quiet machine:
+    #   pytest -m load_sensitive
+    "load_sensitive: needs a quiet machine; deselected in CI",
+]
+
+[tool.bandit]
+# Run with:  bandit -c pyproject.toml -r . -ll     (needs `bandit[toml]`)
+#
+# Tests are excluded, not annotated. `assert` IS the test protocol (pytest
+# rewrites it), so B101 fires once per assertion — 1050 of the 1073 low
+# findings on this tree came from src/**/test_*.py alone. A gate that reports
+# a thousand non-issues is a gate nobody reads. Same reasoning for B102 in
+# src/dashboard/test_no_silent_zeros.py, which execs a slice of demo_app.py
+# on purpose (importing it would boot Streamlit).
+exclude_dirs = [
+    "*/test_*.py",
+    "*/tests/*",
+    "./build",
+    "./.venv",
+]
+
+# Skipped because no code change closes them — they describe what a hardware
+# benchmarking harness IS, and suppressing them here is what keeps the
+# remaining findings worth reading. Each is a deliberate decision, not a TODO:
+#
+#   B404  `import subprocess`. We drive perf, emon, docker, taskset and harbor.
+#   B603  subprocess called WITHOUT shell=True — i.e. the pattern B602 asks for.
+#         Firing on the fix is noise; the injection risk lives in B602.
+#   B607  partial executable path ("perf", "docker"). Deliberate: perf and
+#         docker live at different absolute paths across the distros this ships
+#         to, so PATH resolution is what makes it portable. Hardcoding
+#         /usr/bin/perf would break more hosts than it protects.
+#   B311  `random` without crypto strength. It generates synthetic workload
+#         data and is seeded (random.seed(42)) precisely so runs reproduce.
+#         `secrets` would destroy the reproducibility that makes it a benchmark.
+#
+# Deliberately NOT skipped: B110/B112 (try/except/pass). Those are a real, if
+# low-value, code-quality backlog rather than a security finding — narrowing
+# each one needs per-site judgment about which exception is actually expected.
+skips = ["B404", "B603", "B607", "B311"]
+
+[tool.ruff.lint]
+# Bug-class rules ONLY, deliberately. `ruff check` with default rules finds
+# 1251 issues on this tree, of which 959 are UP006/UP045/UP035 — pep585/604
+# annotation modernization (`List[X]` -> `list[X]`). Those are style: the code
+# is correct either way. Turning them on would make CI red on arrival, and a
+# gate that is red on arrival teaches everyone to ignore red.
+#
+# Every rule below catches something that is WRONG AT RUNTIME. Measured
+# repo-wide, they find 2 findings + 1 F821 — so this gate is green as soon as
+# PR #31 lands, and it would have BLOCKED the merge that broke the CLI:
+#
+#   E9    syntax errors. Caught adapter.py:245's duplicate `def` verbatim:
+#         "invalid-syntax: Expected an indented block after function definition"
+#         (ruff reports syntax errors regardless of `select`, but naming E9 is
+#         the explicit statement of intent.)
+#   F821  undefined name. Caught `ResourceBudget` used with no import — the
+#         latent NameError that any task-sized stream run would have hit.
+#   F811  redefinition of an unused name. The direct signature of the defect:
+#         two `def _make_environment` back to back.
+#
+# F401 (unused import) is NOT here despite being the obvious next candidate:
+# measured 110 findings repo-wide, 101 of them in examples/, experiments/,
+# harness/ and scripts/. Every one is pre-existing dead code, none is a bug, and
+# including it would make this gate red on the day it lands. It is the first
+# entry in the ratchet below.
+#
+# THE RATCHET, so this does not stay minimal forever: add rule families one at
+# a time, each in its own mechanical PR (`ruff check --fix --select <RULE>`),
+# never mixed with a behavioural change. Suggested order: F401 (110, mostly
+# auto-fixable), I (import sort), UP (annotations, ~959 auto-fixable), then
+# B/BLE (likely bugs, needs judgement — 53 blind excepts).
+select = ["E9", "F811", "F821"]
+
+# ─── Plugin entry-point groups ────────────────────────────────────
+# External plugins register here; AgentSysPerf core ships built-in
+# entries below for its reference implementations.
+
+[project.entry-points."agentsysperf.benchmarks"]
+synthetic_cpu = "src.benchmarks.synthetic_cpu:SyntheticCpuAdapter"
+terminal_bench = "src.benchmarks.terminal_bench:TerminalBenchAdapter"
+openclaw = "src.benchmarks.openclaw:OpenClawAdapter"
+swe_bench = "src.benchmarks.swe_bench:SWEBenchAdapter"
+tau_bench = "src.benchmarks.tau_bench:TauBenchAdapter"
+vllm_inference = "src.benchmarks.vllm_inference:VLLMInferenceAdapter"
+
+[project.entry-points."agentsysperf.measurements"]
+l1_subspan = "src.measurements.l1_subspan:L1SubSpanMeasurement"
+l1_system = "src.measurements.l1_system:L1SystemMeasurement"
+l3_perf = "src.measurements.l3_perf:L3PerfMeasurement"
+perfspect = "src.measurements.perfspect:PerfSpectMeasurement"
+# EMON (Intel SEP-based) ships in the separate, unreleased `agentsysperf-emon`
+# plugin, which re-declares this `emon` entry point when installed on an Intel
+# host. Kept out of vendor-neutral core.
+
+[project.entry-points."agentsysperf.optimization_profiles"]
+base = "src.optimization_profiles:BaseProfile"
+amx_only = "src.optimization_profiles:AMXOnlyProfile"
+amx_onednn = "src.optimization_profiles:AMXoneDNNProfile"
+amx_numa_hugepages = "src.optimization_profiles:AMXNumaHugepagesProfile"
+full_xeon = "src.optimization_profiles:FullXeonProfile"
+openvino_xeon = "src.optimization_profiles:OpenVINOXeonProfile"
+
+[project.entry-points."agentsysperf.hardware_telemetry"]
+perf_stat = "src.measurements.l3_perf:PerfStatTelemetry"
+
+[project.entry-points."agentsysperf.analyzers"]
+cpu_bound = "src.analyzers:CPUBoundAnalyzer"
+cache = "src.analyzers:CacheAnalyzer"
+memory_leak = "src.analyzers:MemoryLeakAnalyzer"
+breakdown = "src.analyzers.breakdown:BreakdownAnalyzer"
+memory_bandwidth = "src.analyzers:MemoryBandwidthAnalyzer"
+phase_profiler = "src.analyzers:PhaseProfiler"
+# EmonAnalyzer + EmonScalingAnalyzer (emon_edp) ship in the separate, unreleased
+# `agentsysperf-emon` plugin (re-declares `emon`/`emon_edp` when installed).
+scaling = "src.analyzers:ScalingAnalyzer"
+
+[project.entry-points."agentsysperf.result_stores"]
+sqlite = "src.storage:SQLiteResultStore"
+
+[project.entry-points."agentsysperf.report_generators"]
+xeon_pptx = "src.reporting:XeonPowerPointGenerator"
+markdown = "src.reporting:MarkdownReportGenerator"
+
+[tool.setuptools.packages.find]
+include = ["src*"]
+exclude = ["docs*", "harness*", "fixtures*"]
+
+[tool.setuptools.package-data]
+src = [
+    "data/clean_tasks_23.txt",
+    "storage/schema.sql",
+    "storage/migrations/*.sql",
+]
