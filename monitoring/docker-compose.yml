@@ -1,0 +1,54 @@
+#=========================== begin_copyright_notice ============================
+#
+# Copyright (C) 2026 Intel Corporation
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+#============================ end_copyright_notice =============================
+
+# AgentSysPerf observability stack.
+#
+#   prometheus   :9090  time-series DB + PromQL
+#   pushgateway  :9091  buffer that short-lived benchmark runs push to
+#   grafana      :3000  dashboards (anonymous admin, datasource + dashboard auto-provisioned)
+#
+# Bring up:   docker compose -f monitoring/docker-compose.yml up -d
+# (If the compose plugin is unavailable, use monitoring/up.sh — same containers via docker run.)
+#
+# Then push data:   poetry run python scripts/push_to_prometheus.py
+# Open:             http://localhost:3000  ->  "AgentSysPerf Benchmark Dashboard"
+services:
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: agentsysperf-prometheus
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+    restart: unless-stopped
+
+  pushgateway:
+    image: prom/pushgateway:latest
+    container_name: agentsysperf-pushgateway
+    ports:
+      - "9091:9091"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: agentsysperf-grafana
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_AUTH_DISABLE_LOGIN_FORM=true
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+    depends_on:
+      - prometheus
+    restart: unless-stopped

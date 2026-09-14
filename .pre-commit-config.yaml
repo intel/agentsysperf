@@ -1,0 +1,55 @@
+#=========================== begin_copyright_notice ============================
+#
+# Copyright (C) 2026 Intel Corporation
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+#============================ end_copyright_notice =============================
+
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+default_stages:
+  - pre-commit  # Run locally on every commit
+  - manual      # Run in CI via --hook-stage=manual
+
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.14.0
+    hooks:
+      # Bug-class rules only — see [tool.ruff.lint] in pyproject.toml for the
+      # rationale and the ratchet plan. `--fix` is deliberately ABSENT: a hook
+      # that rewrites the tree on commit turns a 3-line fix into an unreviewable
+      # diff, and every rule selected here wants a human decision (an undefined
+      # name is a bug, not a formatting slip).
+      - id: ruff-check
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DELIBERATELY NOT ENABLED — each was measured against this tree.
+#
+#   typos                130 findings, essentially ALL false positives on this
+#                        codebase: `thr` x59 (this repo's own abbreviation for
+#                        throughput), `ded` x24, numpy's `arange`, and SQL
+#                        keywords split across lines (`SELEC`, `DEFAUL`, `UNIO`).
+#                        Suppressing them one at a time turned into whack-a-mole.
+#                        It was also the slow hook: >150s, because 17,975 of this
+#                        repo's 18,305 tracked files are baseline datasets under
+#                        harness/results (multi-MB trajectory JSON, .cast
+#                        recordings, job logs). Excluding those cut it to 3s, but
+#                        a checker whose every finding is wrong is not a gate.
+#   actionlint           Pulls a 317 MB Go toolchain to validate one YAML file,
+#                        which GitHub already rejects if malformed. Not worth a
+#                        cold download on every CI run at this project's size.
+#   ruff-format          92 of 136 files would be rewritten. Land as ONE
+#                        mechanical PR (`ruff format .`, no logic change), then
+#                        enable — never mixed into a behavioural change.
+#   markdownlint-cli2    Not measured. docs/ holds long design documents with
+#                        deliberate formatting; measure before enabling.
+#   mypy                 Was `mypy agentperf`, correct when written in June and
+#                        stale since `1150126e` renamed the package to
+#                        agentsysperf. Re-target and measure the error count
+#                        before turning it on.
+#
+# The rule these share: a gate that is red on arrival teaches everyone to ignore
+# red, which is worse than no gate.
+# ─────────────────────────────────────────────────────────────────────────────

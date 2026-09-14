@@ -1,0 +1,15 @@
+--=========================== begin_copyright_notice ============================
+--
+-- Copyright (C) 2026 Intel Corporation
+--
+-- SPDX-License-Identifier: Apache-2.0
+--
+--============================ end_copyright_notice =============================
+
+-- Migration 0001 — baseline marker.
+--
+-- This file intentionally contains NO DDL. The baseline schema is produced by
+-- schema.sql (run before the migration runner). 0001 only establishes that a
+-- freshly-created DB is at user_version = 1, so later numbered migrations
+-- (0002+) apply cleanly on top. Existing pre-versioning DBs whose tables
+-- already exist are adopted to version 1 by the runner's baseline logic.

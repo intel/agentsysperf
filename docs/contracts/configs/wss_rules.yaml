@@ -1,0 +1,65 @@
+#=========================== begin_copyright_notice ============================
+#
+# Copyright (C) 2026 Intel Corporation
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+#============================ end_copyright_notice =============================
+
+# =============================================================================
+# AgentSysPerf — WSS Routing Rule Table
+# =============================================================================
+# This is the auditable rule table for the `wss` routing strategy. It was a
+# dangling reference in variants_comparison.yaml (configs/wss_rules.yaml) until
+# now — this file makes the WSS hypothesis concrete and reviewable.
+#
+# IMPORTANT FRAMING: this file does NOT make WSS a privileged default. It is
+# the configuration for ONE routing strategy among eleven. The benchmark
+# (routing_strategy_study.yaml) sweeps all strategies with this config held
+# fixed, and reports whether WSS actually wins.
+#
+# The thresholds below are the working-set-size → cache-tier → pool mapping
+# from the earlier worked example. They are a HEURISTIC, not ground truth:
+# a step can be "medium" by payload size yet cheap if its KV prefix is cached.
+# That limitation is exactly why routing_accuracy is measured, not assumed.
+# =============================================================================
+
+wss_rules:
+  # Ordered: first rule whose max_bytes is not exceeded wins.
+  # max_bytes: null  => catch-all (largest bucket)
+  - wss_class: tiny
+    max_bytes: 1024                 # < 1 KB  → fits L1/L2, trivial lookup
+    pool: control
+    rationale: "SVS / routing / classify / format — sub-microsecond, L1-resident"
+
+  - wss_class: small
+    max_bytes: 32768                # 1–32 KB → L2-resident, rerank-class
+    pool: rerank
+    rationale: "Signal extract / rerank / cross-encoder — L2 working set"
+
+  - wss_class: medium
+    max_bytes: 33554432             # 32 KB–32 MB → L3 / inference-class
+    pool: inference
+    rationale: "Planning / embed / 7B inference — L3 working set, AMX path"
+
+  - wss_class: large
+    max_bytes: null                 # > 32 MB → DRAM-bound
+    pool: gpu_coord
+    rationale: "Large payload / GPU coordination — DRAM-bound, IO-LLC path"
+    # Split rule: tool dispatch / API calls of this size are IO-bound control
+    # work, not compute — send them to the control pool instead.
+    override_task_types: [api_call, tool_dispatch]
+    override_pool: control
+
+# Logical pool names above are mapped to concrete SUT pools by substring match
+# at decision time (e.g. logical "inference" → "xeon-ap-inference"). Supply the
+# concrete pool list via the run config; unmatched logical names fall back to
+# the first available pool and the decision is flagged fell_back=true so the
+# reporter can show how often the mapping was imperfect.
+
+confidence_note: |
+  These thresholds are calibrated from an earlier two-CPU worked example and
+  are SPECULATIVE for any other hardware. Before publishing any comparison,
+  re-derive the byte boundaries from the actual cache hierarchy of the target
+  CPUs (L2 size per core, L3 size, IO-LLC presence) and the actual model
+  footprints in the workload. Do not treat these numbers as validated.

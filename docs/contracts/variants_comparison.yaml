@@ -1,0 +1,202 @@
+#=========================== begin_copyright_notice ============================
+#
+# Copyright (C) 2026 Intel Corporation
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+#============================ end_copyright_notice =============================
+
+# =============================================================================
+# AgentSysPerf — Variants Comparison
+# =============================================================================
+# Compare multiple agent stack configurations head-to-head on the same workload.
+# This is the "killer feature": apples-to-apples comparison of architectures.
+#
+# Each variant defines the SUT plugin choices. AgentSysPerf runs the full workload
+# against every variant in sequence, then produces a comparison report with
+# statistical significance per metric.
+# =============================================================================
+
+comparison:
+  name: centralized_vs_node_local
+  workload: legal_review              # references workload_legal_review.yaml
+  task_count: 200
+  concurrency: 10
+  runs_per_variant: 3                 # for confidence intervals
+  warmup_tasks: 20
+
+  # Statistical significance threshold for "winner" determination
+  significance_p_threshold: 0.05
+
+  # Metrics to compare (subset of full metric set)
+  comparison_metrics:
+    - task_latency_e2e_ms.p99
+    - task_latency_e2e_ms.p50
+    - task_success_rate
+    - cost_per_task_usd
+    - routing_accuracy
+    - kv_cache_hit_rate
+    - gateway_latency_ms.p99
+
+  # =============================================================================
+  # VARIANTS
+  # =============================================================================
+  # Each variant declares which plugin to use for each entity type.
+  # Entities not specified inherit from the default below.
+  # =============================================================================
+
+  defaults:
+    agent_framework: langgraph
+    workload_plugin: legal_review
+    quality_judge:
+      type: composite
+    inference_backend: vllm
+    tools_rag: qdrant
+    memory_store: redis
+    hardware_telemetry: pcm
+
+  variants:
+
+    # ------------------------------------------------------------------------
+    # VARIANT 1: Baseline centralized gateway (current production design)
+    # ------------------------------------------------------------------------
+    - name: baseline_centralized
+      description: |
+        Centralized Envoy gateway. WSS classification happens in LangGraph
+        node. Cluster-wide routing through one gateway.
+
+      gateway:
+        plugin: envoy
+        endpoint: http://gateway.internal:8080
+        config:
+          routing_strategy: header_based
+          health_check_interval_s: 5
+
+      scheduler:
+        plugin: k8s_default
+        config:
+          node_selector_label: cpu-class
+
+      classifier:
+        plugin: rule_based
+        config:
+          rules_file: configs/wss_rules.yaml
+
+      # Hardware: Xeon-AP + Xeon-SP pool
+      hardware_label: xeon_ap_sp_mixed
+
+    # ------------------------------------------------------------------------
+    # VARIANT 2: Node-local scheduler design (the federated proposal)
+    # ------------------------------------------------------------------------
+    - name: node_local_design
+      description: |
+        Each Xeon node runs a local scheduler with dedicated routing cores.
+        SLM-based WSS classification on-node. Gossip for cluster load info.
+
+      gateway:
+        plugin: envoy
+        endpoint: http://gateway.internal:8080
+        config:
+          routing_strategy: capability_only  # thin ingress only
+
+      scheduler:
+        plugin: node_local
+        config:
+          routing_cores: 4
+          dispatch_method: queue_based      # in-memory work queues per WSS tier
+          gossip_protocol: swim
+          gossip_interval_ms: 200
+
+      classifier:
+        plugin: slm_classifier
+        config:
+          model: granite-4-micro            # 1B INT4
+          # fast-path short-circuit uses the same auditable rule table as
+          # the wss routing strategy; SLM only runs when rules are ambiguous
+          fast_path_rules: configs/wss_rules.yaml
+
+      hardware_label: xeon_ap_sp_mixed
+
+    # ------------------------------------------------------------------------
+    # VARIANT 3: AP-only, no routing (simplest possible)
+    # ------------------------------------------------------------------------
+    - name: ap_only_no_routing
+      description: |
+        Single Xeon-AP pool. No gateway, no scheduler, no classifier.
+        All work goes to AP regardless of WSS class.
+
+      gateway:
+        plugin: passthrough
+
+      scheduler:
+        plugin: k8s_default
+
+      classifier:
+        plugin: none
+
+      hardware_label: xeon_ap_only
+
+    # ------------------------------------------------------------------------
+    # VARIANT 4: GPU baseline (for reference)
+    # ------------------------------------------------------------------------
+    - name: gpu_baseline
+      description: |
+        H200 GPU + small CPU control plane. The "what if we just throw GPUs
+        at it" comparison point.
+
+      gateway:
+        plugin: envoy
+
+      scheduler:
+        plugin: k8s_default
+
+      classifier:
+        plugin: rule_based
+
+      inference_backend:
+        plugin: vllm
+        endpoint: http://vllm-gpu-pool:8000
+        config:
+          backend_type: gpu
+
+      hardware_label: gpu_h200
+
+    # ------------------------------------------------------------------------
+    # VARIANT 5: Different agent framework
+    # ------------------------------------------------------------------------
+    - name: autogen_centralized
+      description: |
+        Same as baseline_centralized but with AutoGen instead of LangGraph.
+        Isolates the framework's overhead contribution.
+
+      agent_framework: autogen
+
+      gateway:
+        plugin: envoy
+
+      scheduler:
+        plugin: k8s_default
+
+      classifier:
+        plugin: rule_based
+
+      hardware_label: xeon_ap_sp_mixed
+
+# =============================================================================
+# OUTPUT
+# =============================================================================
+
+reporting:
+  output_dir: ./agentsysperf_results/
+  formats: [json, csv, html_report]
+
+  # Generate a comparison report with:
+  #   - Per-variant per-metric tables (avg, p50, p99 with confidence intervals)
+  #   - Pairwise t-tests for statistical significance
+  #   - Routing decision distribution charts
+  #   - Bottleneck attribution (which component dominates p99)
+  #   - Cost breakdown per variant
+  html_report:
+    template: comparison_default
+    include_traces: true              # embed sample traces for debugging
+    embed_otel_links: true

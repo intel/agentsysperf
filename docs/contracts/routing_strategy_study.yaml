@@ -1,0 +1,142 @@
+#=========================== begin_copyright_notice ============================
+#
+# Copyright (C) 2026 Intel Corporation
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+#============================ end_copyright_notice =============================
+
+# =============================================================================
+# AgentSysPerf — Routing Strategy Study (controlled experiment)
+# =============================================================================
+# This is the artifact that operationalizes the agreed framing: WSS routing is
+# a MEASURED VARIABLE, not a built-in feature.
+#
+# The experiment holds workload, hardware, framework, backends, and the
+# classifier model CONSTANT, and sweeps ONLY the routing strategy. The output
+# answers, with statistical significance: does WSS routing beat the credible
+# alternatives, by how much, and at what decision cost?
+#
+# This is intentionally distinct from variants_comparison.yaml. That file
+# varies whole-stack configurations (centralized vs node-local vs GPU). THIS
+# file changes exactly one thing, so any difference is attributable to the
+# routing policy alone.
+# =============================================================================
+
+study:
+  name: routing_strategy_efficacy
+  hypothesis: >
+    Working-set-size routing reduces p99 task latency and cost-per-task
+    versus naive and load-aware baselines, and the reduction exceeds its
+    classification overhead.
+  null_hypothesis: >
+    WSS routing is statistically indistinguishable from kv_affinity / hybrid
+    once decision cost is charged.
+
+  workload: legal_review            # references workload_legal_review.yaml
+  task_count: 200
+  concurrency: 10
+  runs_per_arm: 3                   # confidence intervals
+  warmup_tasks: 20
+  significance_p_threshold: 0.05
+  multiple_comparison_correction: bonferroni
+
+  # ---------------------------------------------------------------------------
+  # HELD CONSTANT across every arm (this is what makes it a clean experiment)
+  # ---------------------------------------------------------------------------
+  fixed:
+    agent_framework: langgraph
+    inference_backend: vllm
+    tools_rag: qdrant
+    memory_store: redis
+    hardware_label: xeon_ap_sp_mixed
+    classifier_model: granite-4-micro     # only USED by wss/semantic arms,
+                                          # but pinned so cost is comparable
+    pools:                                # concrete SUT pools, fixed
+      - xeon-ap-inference
+      - xeon-ap-rerank
+      - xeon-ap-gpu-coord
+      - xeon-sp-control
+
+  # ---------------------------------------------------------------------------
+  # SWEPT: the only thing that changes between arms
+  # ---------------------------------------------------------------------------
+  swept:
+    routing_strategy:
+      - name: single_pool          # null baseline
+        config: { pool: xeon-ap-inference }
+
+      - name: round_robin          # naive, no awareness
+
+      - name: random
+        config: { seed: 42 }
+
+      - name: least_loaded         # load-aware baseline
+
+      - name: power_of_two         # near-optimal LB baseline
+        config: { seed: 42 }
+
+      - name: kv_affinity          # STRONG production baseline (vLLM stack)
+
+      - name: model_based
+
+      - name: slo_aware
+        config:
+          fast_pools: [xeon-ap-inference, xeon-ap-rerank]
+          tight_deadline_s: 2.0
+
+      - name: wss                  # THE HYPOTHESIS UNDER TEST
+        config:
+          rules_file: configs/wss_rules.yaml
+
+      - name: semantic_slm         # learned routing; SLM cost charged
+        config:
+          slm_cost_ms: 8.0         # ESTIMATE — replace with measured value
+
+      - name: hybrid               # realistic production composite
+        config:
+          stages: [model_based, kv_affinity, least_loaded]
+
+  # ---------------------------------------------------------------------------
+  # REPORTED — note decision cost is first-class so WSS isn't flattered
+  # ---------------------------------------------------------------------------
+  comparison_metrics:
+    - task_latency_e2e_ms.p50
+    - task_latency_e2e_ms.p99
+    - cost_per_task_usd
+    - routing_decision_ms.p99       # the price of being content-aware
+    - routing_accuracy              # vs ground-truth WSS labels in workload
+    - kv_cache_hit_rate
+    - cross_pool_handoffs_per_task
+    - fallback_rate                 # how often a strategy's signal was missing
+
+  # ---------------------------------------------------------------------------
+  # PRE-RUN VALIDATION — refuse to run rather than compare a crippled strategy
+  # ---------------------------------------------------------------------------
+  signal_validation:
+    enforce: true
+    on_missing_required_signal: abort      # not "degrade_to_random"
+    # Example: kv_affinity needs pool_kv_cache_keys. If the SUT cannot expose
+    # prefix-cache state, the whole study aborts with a clear message instead
+    # of silently running kv_affinity as random and declaring WSS the winner.
+
+# =============================================================================
+# HONEST CONFOUNDS — printed into the report header, not hidden
+# =============================================================================
+caveats:
+  unequal_tuning_effort: >
+    round_robin has zero knobs; hybrid has many. Equal tuning investment
+    cannot be guaranteed. Every arm's full config is published with results;
+    do not read a win as definitive without inspecting configs.
+  decision_cost_is_estimated: >
+    wss rule-lookup cost is measured live, but semantic_slm slm_cost_ms is an
+    ESTIMATE. Until replaced with a hardware-measured value, treat semantic_slm
+    standings as indicative only.
+  ground_truth_wss_is_heuristic: >
+    routing_accuracy is scored against expected_wss labels in the workload,
+    which are byte-size heuristics, not validated ground truth. A high
+    routing_accuracy means "agrees with the heuristic", not "provably optimal".
+  single_workload: >
+    Results are for legal_review only. Re-run across rag_qa, code_agent,
+    terminal_bench, customer_support before generalizing — routing strategy
+    rankings are workload-dependent by nature.

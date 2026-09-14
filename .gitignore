@@ -1,0 +1,59 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# Binary artifacts
+*.zip
+*.pptx
+
+# Datasets (fetch separately)
+harness/datasets/
+
+# Job run output
+harness/jobs/
+
+# Benchmark run artifacts (regenerated per run)
+*.db
+*-wal
+*-shm
+*.csv
+perfspect.log
+docs/tb2_*/
+docs/*_records/
+measurement_records.json
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment / secrets
+.env
+.env.*
+experiments/scaling/**/emon.dat
+
+# Local-only working files (not part of the release)
+docs/misc/
+harness/results/
+.claude/
+CLAUDE.md
+docs/prjmgmt/
+docs/local/
+docs/ppts/
+wss_orchestration_example/
+config/cluster.yaml

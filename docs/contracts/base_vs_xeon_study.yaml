@@ -1,0 +1,123 @@
+#=========================== begin_copyright_notice ============================
+#
+# Copyright (C) 2026 Intel Corporation
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+#============================ end_copyright_notice =============================
+
+# =============================================================================
+# AgentSysPerf — Base vs Xeon-Optimized Study (controlled experiment)
+# =============================================================================
+# Same discipline as routing_strategy_study.yaml: hold EVERYTHING constant,
+# vary only the optimization profile, measure what Xeon tuning actually buys
+# for agentic workloads. Per-axis arms let a gain be ATTRIBUTED (AMX? NUMA?
+# quantization?) instead of disappearing into one opaque "optimized" number.
+# =============================================================================
+
+study:
+  name: base_vs_xeon_optimization
+  hypothesis: >
+    Xeon-specific optimizations (AMX, oneDNN/IPEX, NUMA pinning, hugepages,
+    INT4/accelerator offload) materially reduce p99 task latency and
+    cost-per-task for agentic workloads, and the per-axis breakdown shows
+    which optimization carries the gain.
+  null_hypothesis: >
+    Once a FAIR portable baseline is used and engagement is verified, Xeon
+    tuning yields no statistically significant agentic-task improvement
+    beyond what AMX alone provides.
+
+  workload: legal_review
+  task_count: 200
+  concurrency: 10
+  runs_per_arm: 3
+  warmup_tasks: 20
+  significance_p_threshold: 0.05
+  multiple_comparison_correction: bonferroni
+
+  # ---------------------------------------------------------------------------
+  # HELD CONSTANT — only the optimization profile changes
+  # ---------------------------------------------------------------------------
+  fixed:
+    agent_framework: langgraph
+    routing_strategy: wss            # pinned; this study isn't about routing
+    inference_backend: vllm
+    tools_rag: qdrant
+    memory_store: redis
+    hardware_label: xeon_ap_sp_mixed
+    model: llama-3-8b-instruct
+    quant_reference_model: llama-3-8b-instruct   # same weights, requantized
+                                                 # per arm — NOT a different
+                                                 # model (would confound)
+
+  # ---------------------------------------------------------------------------
+  # SWEPT — the only thing that varies
+  # ---------------------------------------------------------------------------
+  swept:
+    optimization_profile:
+      - name: base                  # portable reference (is_baseline=true)
+      - name: amx_only              # isolate AMX
+      - name: amx_onednn            # + oneDNN/IPEX
+      - name: amx_numa_hugepages    # + memory-subsystem tuning
+      - name: openvino_xeon         # alternative runtime (IPEX vs OpenVINO)
+      - name: full_xeon             # everything, incl INT4 + QAT offload
+
+  # ---------------------------------------------------------------------------
+  # REPORTED
+  # ---------------------------------------------------------------------------
+  comparison_metrics:
+    - task_latency_e2e_ms.p50
+    - task_latency_e2e_ms.p99
+    - cost_per_task_usd
+    - cpu_core_seconds_per_task
+    - tokens_out_per_task            # must be ~constant; if it moves, the
+                                     # quantization arm changed quality →
+                                     # latency win is not free (flag it)
+    - task_success_rate              # quality guard: INT4 must not tank this
+
+  # ---------------------------------------------------------------------------
+  # ENGAGEMENT VERIFICATION — the integrity core of this study
+  # ---------------------------------------------------------------------------
+  engagement_verification:
+    enforce: true
+    on_not_engaged: abort_arm        # NOT "report anyway"
+    # Each arm's profile declares verify_counters. After warmup, the harness
+    # calls OptimizationProfilePlugin.verify_engaged() which reads real
+    # hardware counters via HardwareTelemetryPlugin. If a claimed
+    # optimization shows ~zero activity (AMX kernel silently fell back to
+    # AVX-512; hugepages not actually mapped; QAT idle), the arm is ABORTED
+    # and excluded — never reported as a valid "Xeon-optimized" data point.
+    baseline_purity_check:
+      enforce: true
+      # The reporter INVALIDATES the whole study if the `base` arm itself
+      # shows amx_active_cycle_ratio > 0.01 — a "base" that secretly uses
+      # AMX would deflate the baseline and inflate every speedup.
+
+# =============================================================================
+# HONEST CONFOUNDS — printed into the report header, not buried
+# =============================================================================
+caveats:
+  strawman_baseline_trap: >
+    The single most cherry-picked number in CPU vendor marketing is
+    base-vs-optimized, achieved by crippling the baseline. Here `base` is a
+    stock AVX-512 + FP32 + unpinned build (what `pip install` actually
+    gives), and baseline_purity_check aborts the study if it is secretly
+    optimized. Read any speedup against the published base axes, not in
+    isolation.
+  quantization_changes_the_workload: >
+    int8/int4 arms change numerics. tokens_out_per_task and
+    task_success_rate are reported alongside latency precisely so a "win"
+    that is actually a quality regression is visible. A latency gain with a
+    success-rate drop is NOT a free lunch.
+  engagement_thresholds_are_estimates: >
+    verify_counters thresholds (e.g. amx_active_cycle_ratio >= 0.05) are
+    starting estimates. Calibrate against a known-good AMX run on the target
+    silicon before trusting an engaged/not-engaged verdict.
+  single_workload_single_model: >
+    Results are legal_review + llama-3-8b only. Optimization payoff is
+    workload- and model-shape-dependent; re-run across rag_qa, code_agent,
+    terminal_bench and at least one larger model before generalizing.
+  hardware_specific: >
+    AMX/oneDNN/QAT availability and payoff differ across Xeon generations
+    (and are absent on non-Intel). Profiles encode Intel-specific axes;
+    label results with the exact CPU SKU.

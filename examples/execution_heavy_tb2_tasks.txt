@@ -1,0 +1,33 @@
+# Execution-Heavy Terminal-Bench 2 Tasks
+#
+# Curated list of TB2 tasks with significant computational/execution overhead
+# for Xeon-centric benchmarking. Focus on CPU-bound workloads (compilation,
+# computation, data processing) rather than LLM-heavy tasks.
+#
+# Usage:
+#   poetry run python examples/run_terminal_bench_tb2.py --include $(cat examples/execution_heavy_tb2_tasks.txt | grep -v '^#' | head -10 | tr '\n' ',')
+
+# Computational / CPU-bound
+terminal-bench/circuit-fibsqrt         # Logic gate simulator, Fibonacci + sqrt computation
+terminal-bench/make-mips-interpreter   # Implement MIPS CPU interpreter
+terminal-bench/qsort                   # Sorting algorithm implementation
+terminal-bench/mathgame                # Mathematical computation game
+
+# Compilation / Build
+terminal-bench/compile-c-program       # C compilation workload
+terminal-bench/build-cmake             # CMake build system
+terminal-bench/makefile-debug          # Makefile-based build
+
+# Data Processing
+terminal-bench/parse-large-log         # Log file parsing (100K+ lines)
+terminal-bench/csv-processing          # CSV data transformation
+terminal-bench/json-aggregate          # JSON aggregation
+
+# Systems / I/O
+terminal-bench/disk-benchmark          # Disk I/O stress test
+terminal-bench/file-compression        # Compression/decompression
+terminal-bench/archive-extract         # Tar/zip extraction
+
+# Cryptography
+terminal-bench/hash-computation        # SHA256/MD5 hashing
+terminal-bench/encrypt-decrypt         # Encryption workload

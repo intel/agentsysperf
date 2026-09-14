@@ -1,0 +1,115 @@
+#=========================== begin_copyright_notice ============================
+#
+# Copyright (C) 2026 Intel Corporation
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+#============================ end_copyright_notice =============================
+
+# AgentSysPerf Local Harness — Hardware Configuration
+# Detected: Intel Xeon 6787P (Granite Rapids), 2 sockets, 86 cores/socket
+# 4 NUMA nodes, AMX (bf16/int8/tile), AVX-512, 344 threads
+
+hardware:
+  cpu_model: "Intel Xeon 6787P"
+  sockets: 2
+  cores_per_socket: 86
+  threads_per_core: 2
+  total_threads: 344
+  numa_nodes: 4
+  # NUMA topology: node0=0-42,172-214  node1=43-85,215-257
+  #                node2=86-128,258-300  node3=129-171,301-343
+  l1d_per_core_kb: 48
+  l2_per_core_mb: 2
+  l3_per_socket_mb: 336
+  has_amx: true
+  has_avx512: true
+
+# LLM mode for the harness run
+# "off"    — proxy returns instantly (characterize orchestration + tools only)
+# "slm"    — local small model on-CPU (characterize on-CPU inference)
+# "replay" — serve recorded fixture with original latency timing
+# "live"   — forward to a real LLM endpoint
+llm_mode: "off"
+
+# Replay proxy settings
+proxy:
+  port: 4001
+  fixture_file: "../fixtures/tb2_sonnet_replay/fixture.jsonl"
+
+# SLM settings (when llm_mode=slm)
+slm:
+  # model_path: "/path/to/granite-micro-gguf"
+  # backend: "llama.cpp"  # or "vllm"
+  # port: 8000
+
+# Live LLM settings (when llm_mode=live)
+live:
+  # endpoint: "http://localhost:4000/v1"
+
+# Workload — Terminal-Bench 2 via Harbor
+workload:
+  tasks:
+    - reshard-c4-data
+    - make-doom-for-mips
+    - constraints-scheduling
+    - train-fasttext
+    - video-processing
+    - schemelike-metacircular-eval
+    - build-cython-ext
+    - largest-eigenval
+    - path-tracing
+    - write-compressor
+  concurrency: 5
+  attempts: 1        # k=1 for characterization (not throughput)
+  agent_timeout_multiplier: 2.0
+
+# Perf sampling configuration
+perf:
+  enabled: true      # set false if perf_event_paranoid blocks access
+  # Continuous pass — lightweight, runs throughout
+  continuous_events:
+    - cycles
+    - instructions
+    - cache-references
+    - cache-misses
+    - branch-instructions
+    - branch-misses
+    - context-switches
+    - cpu-migrations
+    - page-faults
+  # Per-stage deep pass — heavier, only during targeted characterization
+  deep_events:
+    - "cpu/event=0xc4,umask=0x20,name=br_inst_retired_near_taken/"
+    - "{cycles,instructions,cache-misses,LLC-load-misses,LLC-store-misses}"
+  sample_interval_ms: 100
+
+# Optimization profiles to sweep
+profiles:
+  - name: base
+    numa: unpinned
+    hugepages: "4k"
+    core_isolation: false
+    description: "Stock baseline — no tuning"
+
+  - name: numa_pinned
+    numa: "node0"
+    hugepages: "4k"
+    core_isolation: false
+    description: "NUMA-local allocation only"
+
+  - name: numa_hugepages
+    numa: "node0"
+    hugepages: "2M"
+    core_isolation: false
+    description: "NUMA + 2M hugepages"
+
+  - name: isolated
+    numa: "node0"
+    hugepages: "2M"
+    core_isolation: true
+    core_range: "0-21"     # half of node0 physical cores
+    description: "NUMA + hugepages + core isolation"
+
+# Output
+output_dir: "./results"

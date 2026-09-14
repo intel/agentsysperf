@@ -1,0 +1,120 @@
+#=========================== begin_copyright_notice ============================
+#
+# Copyright (C) 2026 Intel Corporation
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+#============================ end_copyright_notice =============================
+
+# =============================================================================
+# AgentSysPerf — Reference Workload: legal_review
+# =============================================================================
+# This is the canonical multi-step agentic workload from the worked example
+# earlier in the design discussion. Other reference workloads (rag_qa,
+# code_agent, customer_support, research, mixed_realistic) follow the same
+# schema.
+# =============================================================================
+
+workload:
+  name: legal_review
+  version: 1.0.0
+  description: |
+    Multi-step legal document review: summarize a contract, find similar
+    clauses in a reference library, and propose revisions for risky clauses.
+
+  # Task generation
+  task_count: 100
+  seed: 42
+
+  # Parameters drive synthetic generation. Each task pulls one value from
+  # each parameter range (uniform by default, or via `distribution`).
+  parameters:
+    contract_size_tokens:
+      values: [500, 2000, 8000]
+      distribution: weighted        # uniform | weighted | normal
+      weights: [0.3, 0.5, 0.2]
+    similar_clause_db_size:
+      value: 10000                  # fixed
+    num_revisions_per_contract:
+      values: [1, 3, 5]
+      distribution: uniform
+    contract_domain:
+      values: [saas, employment, nda, vendor]
+      distribution: uniform
+
+  # The expected agent plan. Each step has expected WSS class and tools.
+  # The framework uses this as ground truth for routing-accuracy metrics.
+  expected_steps:
+    - name: classify
+      expected_wss: tiny
+      expected_pool: control
+      max_latency_ms: 50
+
+    - name: plan
+      expected_wss: tiny
+      expected_pool: control
+      max_latency_ms: 100
+
+    - name: summarize
+      expected_wss: medium
+      expected_pool: inference
+      expected_tools: []
+      max_latency_ms: 1000
+
+    - name: rag_retrieve
+      expected_wss: small
+      expected_pool: control
+      expected_tools: [vector_search]
+      max_latency_ms: 200
+
+    - name: rerank
+      expected_wss: small
+      expected_pool: rerank
+      max_latency_ms: 100
+
+    - name: propose_revisions
+      expected_wss: medium
+      expected_pool: inference
+      max_latency_ms: 2000
+
+    - name: format
+      expected_wss: tiny
+      expected_pool: control
+      max_latency_ms: 50
+
+  # Service Level Objectives — used for goodput calculations
+  slo:
+    p99_latency_s: 5.0
+    p50_latency_s: 2.0
+    task_success_rate_min: 0.95
+    cost_per_task_usd_max: 0.10
+    routing_accuracy_min: 0.90
+
+  # Quality judging configuration
+  quality_judge:
+    type: composite                 # composite | llm | regex | human
+    judges:
+      - name: contains_check
+        type: regex
+        patterns:
+          - "liability"
+          - "termination"
+          - "intellectual property"
+        min_matches: 2
+
+      - name: llm_judge
+        type: llm
+        model: claude-sonnet-4-5
+        rubric: |
+          Did the agent:
+          1. Correctly identify risky clauses?
+          2. Reference at least one similar clause from the library?
+          3. Propose specific, actionable revisions?
+
+      - name: tool_use_check
+        type: deterministic
+        required_tools: [vector_search]
+
+    # How to combine — all must pass for success; weighted score for partial credit
+    success_rule: all_pass
+    score_aggregation: mean
