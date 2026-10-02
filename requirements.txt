@@ -89,7 +89,7 @@ pydantic-core==2.46.5
 pydantic-settings==2.15.0
 pydeck==0.9.3
 pygments==2.21.0
-pyjwt==2.13.0
+pyjwt==2.15.0
 pyparsing==3.3.2
 python-dateutil==2.9.0.post0
 python-dotenv==1.2.3
