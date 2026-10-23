@@ -75,7 +75,7 @@ openai==2.54.0
 packaging==26.3
 pandas==3.0.5
 pathspec==1.1.1
-pillow==12.3.0
+pillow==13.0.0
 platformdirs==4.11.7
 plotly==7.0.0
 postgrest==2.31.0
