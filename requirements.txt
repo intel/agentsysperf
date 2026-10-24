@@ -38,7 +38,7 @@ dirhash==0.5.0
 distro==1.9.0
 fastapi==0.141.1
 fastuuid==0.14.0
-filelock==3.32.5
+filelock==4.2.1
 fonttools==4.64.0
 frozenlist==1.8.0
 fsspec==2026.7.0
