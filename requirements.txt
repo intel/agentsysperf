@@ -62,7 +62,7 @@ joblib==1.6.0
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 kiwisolver==1.5.1
-litellm==1.99.0
+litellm==1.100.4
 lxml==6.1.2
 markdown-it-py==4.2.0
 markupsafe==3.0.3
