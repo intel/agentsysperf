@@ -47,7 +47,7 @@ dependencies = [
     # >=1.73.0: first release shipping the "langfuse_otel" callback the trace
     # extra registers (src/trace/langfuse_setup.py). Older litellm only
     # has the v2 "langfuse" callback, which would silently no-op with langfuse 3.
-    "litellm>=1.73.0",
+    "litellm>=1.100.4",
     "harbor>=0.8.0",
     "scikit-learn>=1.8.0",
     "pandas>=2.0.0",
