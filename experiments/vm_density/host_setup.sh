@@ -12,7 +12,7 @@
 # writes host.env for the runner.
 #
 #   host_setup.sh [stage ...]
-#   stages: fetch qpl build guest accel providers store verify   (default: all, in that order)
+#   stages: fetch qpl build guest accel providers store disks verify   (default: all, in that order)
 #
 # Environment:
 #   VMD_HOME        workspace (default $AGENTSYSPERF_HOME/vm_density or ~/.agentsysperf/vm_density)
@@ -21,6 +21,9 @@
 #   QPL_REPO QPL_TAG DTO_REPO DTO_TAG   intel/qpl v1.9.0, intel/DTO v1.2
 #   KERNEL_WQS      kernel dmaengine work queues per DSA device (3); the user queue is wq<dev>.<KERNEL_WQS>
 #   STORE_GIB       size of the tmpfs checkpoint store (40), VMD_STORE its mount point
+#   VMD_DISKS_GIB   size of the XFS loop file that holds the guest disks (256); reflink copies
+#                   give every sandbox its own writable disk without copying the image
+#   GUEST_MEM GUEST_VCPUS   guest geometry baked into the templates (2G, 2)
 #   GUEST_KERNEL GUEST_INITRD   a bzImage + initrd with virtio-blk (default: the host's /boot pair if readable)
 #   CARGO           cargo binary (default: cargo in PATH, else ~/.cargo/bin/cargo)
 # The accel, providers and store stages use sudo.
@@ -38,6 +41,9 @@ DTO_REPO=${DTO_REPO:-https://github.com/intel/DTO.git}
 DTO_TAG=${DTO_TAG:-v1.2}
 KERNEL_WQS=${KERNEL_WQS:-3}
 STORE_GIB=${STORE_GIB:-40}
+VMD_DISKS_GIB=${VMD_DISKS_GIB:-256}
+GUEST_MEM=${GUEST_MEM:-2G}
+GUEST_VCPUS=${GUEST_VCPUS:-2}
 GUEST_KERNEL=${GUEST_KERNEL:-}
 GUEST_INITRD=${GUEST_INITRD:-}
 CARGO=${CARGO:-$(command -v cargo 2>/dev/null || echo "$HOME/.cargo/bin/cargo")}
@@ -286,6 +292,28 @@ stage_store() {
     fi
 }
 
+# ---------------------------------------------------------------- disks
+stage_disks() {
+    # Guest disks live on an XFS filesystem with reflink so a sandbox's writable
+    # copy of a 1-2 GiB task image costs a metadata operation, not a copy (the
+    # host's own filesystem may be ext4, as it is on the hosts this was built on).
+    local img=$VMD_HOME/disks.img m=$VMD_HOME/disks
+    mkdir -p "$m"
+    if mountpoint -q "$m"; then
+        log "disks: $m already mounted ($(df -h "$m" | awk 'NR==2{print $2", "$4" free"}'))"
+        return
+    fi
+    if [ ! -f "$img" ]; then
+        need mkfs.xfs
+        truncate -s "${VMD_DISKS_GIB}G" "$img"
+        mkfs.xfs -q -m reflink=1 "$img" || die "disks: mkfs.xfs failed"
+        log "disks: created $img (${VMD_DISKS_GIB} GiB sparse, XFS with reflink)"
+    fi
+    sudo mount -o loop "$img" "$m" || die "disks: mount of $img failed"
+    sudo chown "$USER" "$m"
+    log "disks: $img mounted at $m"
+}
+
 # ---------------------------------------------------------------- verify + host.env
 kernel_offload() { [ -e /dev/uffd_dma ] && lsmod | grep -q '^dcbm ' && echo 1 || echo 0; }
 write_env() {
@@ -301,6 +329,9 @@ CH_SRC='$CH_SRC'
 GUEST_KERNEL='$VMD_HOME/guest/vmlinuz'
 GUEST_INITRD='$VMD_HOME/guest/initrd'
 VMD_STORE='$VMD_STORE'
+VMD_DISKS='$VMD_HOME/disks'
+GUEST_MEM=$GUEST_MEM
+GUEST_VCPUS=$GUEST_VCPUS
 DTO_WQ_LIST='$(echo $dto | tr ' ' ';')'
 IAX_WQS='$(echo $iax | tr ' ' ';')'
 KERNEL_OFFLOAD=$(kernel_offload)
@@ -315,16 +346,16 @@ stage_verify() {
     [ -x "$BIN/offload_daemon" ] && LD_LIBRARY_PATH=$BIN "$BIN/offload_daemon" serve --help >/dev/null && log "verify: offload_daemon serve ok"
     [ -f "$BIN/VERSIONS" ] && sed 's/^/verify:   /' "$BIN/VERSIONS"
     log "verify: socket $VMD_SOCKET cpus $(node_cpus), free $(awk '/MemFree/ {printf "%d", $4/1048576}' "/sys/devices/system/node/node$VMD_SOCKET/meminfo") GiB, 2 MiB pool $(cat "/sys/devices/system/node/node$VMD_SOCKET/hugepages/hugepages-2048kB/nr_hugepages") pages"
-    sed 's/^/verify:   /' "$VMD_HOME/host.env" | grep -E 'DTO_WQ_LIST|IAX_WQS|KERNEL_OFFLOAD|ACCEL_PENDING'
+    sed 's/^/verify:   /' "$VMD_HOME/host.env" | grep -E 'DTO_WQ_LIST|IAX_WQS|KERNEL_OFFLOAD|ACCEL_PENDING|VMD_DISKS|GUEST_'
     [ "$ACCEL_PENDING" = 1 ] && log "verify: WARNING WQ layout pending (see accel stage)"
     log "verify: done"
 }
 
-stages=("$@"); [ ${#stages[@]} -gt 0 ] || stages=(fetch qpl build guest accel providers store verify)
+stages=("$@"); [ ${#stages[@]} -gt 0 ] || stages=(fetch qpl build guest accel providers store disks verify)
 for s in "${stages[@]}"; do
     case $s in
-        fetch|qpl|build|guest|accel|providers|store|verify) log "== $s"; "stage_$s" ;;
-        all) for t in fetch qpl build guest accel providers store verify; do log "== $t"; "stage_$t"; done ;;
+        fetch|qpl|build|guest|accel|providers|store|disks|verify) log "== $s"; "stage_$s" ;;
+        all) for t in fetch qpl build guest accel providers store disks verify; do log "== $t"; "stage_$t"; done ;;
         *) die "unknown stage $s" ;;
     esac
 done
