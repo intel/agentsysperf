@@ -78,3 +78,48 @@ A snapshot carries the template's disk and console paths, so a restored VMM
 runs in its own user and mount namespace with the sandbox's reflink copy and
 console file bound over those paths. This needs unprivileged user namespaces
 (on Ubuntu 24.04 the AppArmor restriction allows plain `unshare -Urm`).
+
+## Running a cell
+
+```bash
+python3 experiments/vm_density/vmfleet.py --density 16 --engine dsaiaa --launch burst --duration 600
+python3 experiments/vm_density/vmfleet.py --density 16 --engine cpu --launch staggered --duration 600
+```
+
+`vmfleet.py` runs one cell: N sandbox slots on the socket, each restored from
+a session's warm template, driven through the recorded turns with a diff
+checkpoint after every turn and a full save at the end, then recycled with
+the next session until `--duration` is up (in-flight sessions get `--grace`
+seconds to finish). One thread per slot keeps a sandbox's checkpoints in
+order while sandboxes overlap freely; a drainer thread parses every console
+into per-slot events.
+
+| option | meaning |
+|---|---|
+| `--launch burst` | every slot starts at once, restores in flight unbounded: the first wave of restores, turns and checkpoints collides |
+| `--launch staggered` | starts spaced by `--stagger` (default: mean session length / N, at least 0.5 s), at most `--max-restores` (8) restores in flight |
+| `--engine` | `none` (no daemon), `cpu`, `dsa`, `iaa`, `dsaiaa` as in the arms table; the dsa engines restore with UFFDIO_COPY and turn the providers' offloading on for the cell when the kernel has them |
+| `--regime` | which templates: `x0.1` (recorded think times scaled by 0.1) or `real` |
+| `--ckpt-every k` | diff after every k-th turn (0 = base checkpoint only, -1 = none); `--no-save`, `--no-recycle` |
+
+Pause and resume go straight over the VMM's API socket; send-migration goes
+through `ch-remote`; the resident daemon's `Checkpoint N` log line is the
+completion signal. The cell refuses to start (exit 3, `refused.json`) when the
+huge page pool, the store or the accelerator queues cannot hold it, and one
+cell runs at a time per host (`$VMD_HOME/.cell.lock`).
+
+Output under `$VMD_HOME/results/<label>/`: `result.json` with the cell
+config, host samples (socket CPU busy, node free memory, huge pages, store
+use, live slots, once a second), provider counter deltas, one record per
+sandbox incarnation (restore wall and CPU, base checkpoint, turns, save,
+VMM CPU with and without the vCPU threads, daemon CPU), every turn (guest
+seconds, rc, output bytes) and every checkpoint (pause wall, after-step
+delay, daemon cpu_ms, dirty and changed pages, bytes, DSA ops, whether the
+pause outlasted the recorded think time), plus the per-sandbox console,
+VMM, daemon and restore logs. A summary is printed at the end.
+
+Smoke on gnr-qual1 (x0.1 regime, 2 slots, 60 s cells): dsaiaa burst restores
+in 100 ms at 0.04 core-s with 920 UFFDIO_COPYs on DSA, diff checkpoints
+pause 9 ms (3.6 ms of daemon CPU), saves 65 ms; cpu staggered restores in
+188 ms at 0.26 core-s, diffs pause 13 ms (7.6 ms CPU), saves 115 ms; a slot
+with no daemon runs the session at 0.96 core-s of VMM time.
