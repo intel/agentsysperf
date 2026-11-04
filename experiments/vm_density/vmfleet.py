@@ -43,6 +43,8 @@ import time
 
 CLK = os.sysconf("SC_CLK_TCK")
 DRAIN_SECS = 0.05
+API_BUSY_S = 10.0         # how long pause/resume retry while the VMM answers 409 (migration worker still owns the VM)
+STALL_S = 90.0            # a session with no step for this long is nudged with a resume, then failed
 STEP_RE = re.compile(rb"AGENT_STEP_DONE (\d+) (\S+) seed=(\d+) secs=([0-9.]+)")
 WL2_RE = re.compile(rb"AGENT_WL2 (\S+) seed=(\d+) secs=[0-9.]+ rc=(\d+) out=(\d*) err=(\d*)")
 KV_RE = re.compile(r"\b([a-z_]+)=([0-9][0-9.]*)\b")
@@ -117,6 +119,20 @@ def ch_api(sock, path, body=None, timeout=30):
         return r.status
     except (OSError, http.client.HTTPException) as e:
         return f"error {e.__class__.__name__}"
+
+
+def ch_api_busy(sock, path, body=None, budget=API_BUSY_S):
+    """ch_api, retried while the VMM answers 409: the migration worker of the
+    previous send-migration still owns the VM for a moment after the daemon
+    has written the checkpoint.  Returns (status, retries, seconds waited)."""
+    t0 = time.time()
+    n = 0
+    while True:
+        st = ch_api(sock, path, body)
+        if st != 409 or time.time() - t0 > budget:
+            return st, n, time.time() - t0
+        n += 1
+        time.sleep(0.0005)
 
 
 def proc_ticks(path):
@@ -433,7 +449,9 @@ class Cell:
             rec["turn"] = turn
             rec["think"] = self.think[sb["session"]].get(turn) if turn is not None else None
         t0 = time.time()
-        st = ch_api(sb["sock"], "vm.pause")
+        st, n, w = ch_api_busy(sb["sock"], "vm.pause")
+        if n:
+            rec["pause_busy"] = [n, round(w, 4)]
         if st != 204:
             rec["failed"] = f"pause {st}"
             return rec
@@ -474,7 +492,11 @@ class Cell:
             if line is None:
                 rec["failed"] = "timeout waiting for the daemon"
         t2 = time.time()
-        rec["resume_http"] = ch_api(sb["sock"], "vm.resume")
+        rec["resume_http"], n, w = ch_api_busy(sb["sock"], "vm.resume")
+        if n:
+            rec["resume_busy"] = [n, round(w, 4)]
+        if rec["resume_http"] != 204:
+            rec["failed"] = f"resume {rec['resume_http']}"
         t3 = time.time()
         rec["wall"] = t2 - t1
         rec["pause_wall"] = t3 - t0
@@ -698,6 +720,8 @@ class Cell:
                 if "failed" in c:
                     rec["failed"] = "base checkpoint: " + c["failed"]
                     return
+        t_last = time.time()
+        nudged = 0
         while True:
             try:
                 kind, k, t, turn = sb["events"].get(timeout=0.5)
@@ -708,7 +732,20 @@ class Cell:
                 if self.stop.is_set() or time.time() >= self.t_end + a.grace:
                     rec["cut"] = True
                     return
+                if time.time() - t_last > STALL_S:
+                    # No step for STALL_S: most likely the guest was left paused.  One resume
+                    # nudge (harmless when it is running: 405/409/500), then fail the session.
+                    if nudged:
+                        rec["failed"] = f"stalled: no step for {STALL_S:.0f} s after a resume nudge"
+                        return
+                    st = ch_api(sb["sock"], "vm.resume")
+                    rec["stall_nudge"] = st
+                    log(f"  slot {sb['slot']} gen {sb['gen']} ({sb['session']}): no step for {STALL_S:.0f} s, "
+                        f"resume nudge -> {st}")
+                    nudged += 1
+                    t_last = time.time()
                 continue
+            t_last = time.time()
             if kind == "step":
                 if self.eng["daemon"] and a.ckpt_every > 0 and k % a.ckpt_every == 0:
                     c = self.checkpoint(sb, "step", k, t, turn)
