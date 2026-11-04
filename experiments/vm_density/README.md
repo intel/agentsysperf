@@ -165,3 +165,29 @@ controller's `result.json` and logs plus `cell.log`), `run.json` (arguments,
 `host.env`, binary versions) and `cells.json`, one record per cell with its
 status, exit code, pool size, timing and printed summary, rewritten after
 every cell.
+
+## Analysis
+
+```bash
+python3 experiments/vm_density/analysis.py $VMD_HOME/results/screen --print --plots
+```
+
+`analysis.py` reads every cell's `result.json` under a run directory and
+writes `all_results.json` (one record per cell in the scaling experiment's
+shape, `config` and `agents[]` with turn durations and throughput, plus a
+`vm` block with sessions per hour, turn latency over all turns and after the
+ramp, time to first turn, restore, checkpoint, save and host CPU per
+session, provider counters, memory and store peaks), `analysis_report.json`
+(curves per engine and launch pattern over density, the median over reps;
+the knee of each curve; burst against staggered at equal N; each
+accelerator arm against cpu at equal N; findings) and, with `--plots`, one
+PNG per metric with solid lines for burst and dashed for staggered.
+
+A cell's steady state starts when its last slot has run its first turn, so a
+burst cell's first wave and a staggered cell's ramp are reported separately
+(restore p99 and time to first turn p99 of the first generation). The
+per-turn slowdown compares each recorded (session, turn) with the same arm
+and pattern at N=1, so the session mix a cell happened to run does not
+enter it. A curve's knee is the first density where that slowdown exceeds
+1.3 at the median or 2.0 at the 95th percentile, or the per-slot session
+rate falls under 70 % of N=1.
