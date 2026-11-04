@@ -3,8 +3,8 @@
 
     run_experiment.py --quick                 # 1,4 x burst,staggered x cpu,dsaiaa, 120 s cells
     run_experiment.py --screen                # phase 1: none/cpu/dsaiaa over every density and
-                                              # launch pattern, then dsa/iaa at 1,8,24,40
-    run_experiment.py --confirm --densities 1,16,40   # phase 2: every arm and pattern, 3 reps
+                                              # launch pattern, then dsa/iaa at 1,8,24,36
+    run_experiment.py --confirm --densities 1,16,36   # phase 2: every arm and pattern, 3 reps
     run_experiment.py --full                  # every arm x density x pattern
     run_experiment.py --densities 1,8 --engines cpu,dsaiaa --launch burst --regime real --duration 900
 
@@ -46,14 +46,17 @@ sys.path.insert(0, HERE)
 from vmfleet import ENGINES  # noqa: E402  (which template codec each engine restores from)
 ENGINE_ORDER = ["none", "cpu", "iaa", "dsa", "dsaiaa"]
 LAUNCHES = ["burst", "staggered"]
-DENSITIES = [1, 2, 4, 8, 16, 24, 32, 40]
-SCREEN_ACCEL_DENSITIES = [1, 8, 24, 40]
+# 2 GiB guests: 2 GiB of pool plus about 1.1 GiB of VMM, daemon and checkpoints each, so a 125 GiB
+# socket holds 36 beside the kernel and a reserve (40 does not fit)
+DENSITIES = [1, 2, 4, 8, 16, 24, 32, 36]
+SCREEN_ACCEL_DENSITIES = [1, 8, 24, 36]
 CELL_OVERHEAD_S = 90          # pool resize, preflight, teardown, settle
-# node memory outside the huge page pool that a cell needs, in GiB: the VMM's own pages, the resident
-# daemon (reference template, worker buffers: 0.4 GiB observed) and its share of the node-bound store
-VMM_GIB = 0.15
-DAEMON_GIB = 0.45
-STORE_GIB = 0.5
+# node memory outside the huge page pool that a cell needs, in GiB per sandbox: the VMM's own pages,
+# the resident daemon, and its checkpoints in the node-bound store (the raw reference image, the base
+# checkpoint and the save: 0.63-0.77 GiB at the peak of the smoke cells), plus a reserve
+VMM_GIB = 0.1
+DAEMON_GIB = 0.15
+STORE_GIB = 0.75
 RESERVE_GIB = 4.0
 
 
@@ -420,11 +423,11 @@ def main():
     mode = ap.add_mutually_exclusive_group()
     mode.add_argument("--quick", action="store_true", help="smoke: densities 1,4 x both patterns x cpu,dsaiaa, 120 s cells")
     mode.add_argument("--screen", action="store_true",
-                      help="phase 1: none,cpu,dsaiaa at every density and pattern, then dsa,iaa at 1,8,24,40")
+                      help="phase 1: none,cpu,dsaiaa at every density and pattern, then dsa,iaa at 1,8,24,36")
     mode.add_argument("--confirm", action="store_true",
-                      help="phase 2: every engine and pattern at --densities (default 1,40: add the knee), 3 reps")
+                      help="phase 2: every engine and pattern at --densities (default 1,36: add the knee), 3 reps")
     mode.add_argument("--full", action="store_true", help="every engine x density x pattern")
-    ap.add_argument("--densities", default=None, help="comma-separated slot counts (default 1,2,4,8,16,24,32,40)")
+    ap.add_argument("--densities", default=None, help="comma-separated slot counts (default 1,2,4,8,16,24,32,36)")
     ap.add_argument("--engines", default=None, help="comma-separated engines (none,cpu,dsa,iaa,dsaiaa)")
     ap.add_argument("--launch", default=None, help="comma-separated launch patterns (burst,staggered)")
     ap.add_argument("--regime", default="x0.1", help="template think regime (x0.1 | real)")
@@ -460,7 +463,7 @@ def main():
         defaults = dict(densities=DENSITIES, engines=ENGINE_ORDER, launch=LAUNCHES, reps=1, duration=600)
     elif a.confirm:
         a.mode = "confirm"
-        defaults = dict(densities=[1, 40], engines=ENGINE_ORDER, launch=LAUNCHES, reps=3, duration=600)
+        defaults = dict(densities=[1, 36], engines=ENGINE_ORDER, launch=LAUNCHES, reps=3, duration=600)
     elif a.full:
         a.mode = "full"
         defaults = dict(densities=DENSITIES, engines=ENGINE_ORDER, launch=LAUNCHES, reps=1, duration=600)

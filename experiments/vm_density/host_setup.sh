@@ -12,7 +12,7 @@
 # writes host.env for the runner.
 #
 #   host_setup.sh [stage ...]
-#   stages: fetch qpl build guest accel providers store disks verify   (default: all, in that order)
+#   stages: fetch qpl build guest accel providers pool store disks verify   (default: all, in that order)
 #
 # Environment:
 #   VMD_HOME        workspace (default $AGENTSYSPERF_HOME/vm_density or ~/.agentsysperf/vm_density)
@@ -21,12 +21,14 @@
 #   QPL_REPO QPL_TAG DTO_REPO DTO_TAG   intel/qpl v1.9.0, intel/DTO v1.2
 #   KERNEL_WQS      kernel dmaengine work queues per DSA device (3); the user queue is wq<dev>.<KERNEL_WQS>
 #   STORE_GIB       size of the tmpfs checkpoint store (40), VMD_STORE its mount point
+#   FREE_1G_POOL    1 (default): free the socket's idle 1 GiB huge page pool so the 2 MiB pool can
+#                   grow to the full density (a boot-time 1 GiB pool comes back at the next reboot)
 #   VMD_DISKS_GIB   size of the XFS loop file that holds the guest disks (256); reflink copies
 #                   give every sandbox its own writable disk without copying the image
 #   GUEST_MEM GUEST_VCPUS   guest geometry baked into the templates (2G, 2)
 #   GUEST_KERNEL GUEST_INITRD   a bzImage + initrd with virtio-blk (default: the host's /boot pair if readable)
 #   CARGO           cargo binary (default: cargo in PATH, else ~/.cargo/bin/cargo)
-# The accel, providers and store stages use sudo.
+# The accel, providers, pool, store and disks stages use sudo.
 set -euo pipefail
 
 VMD_HOME=${VMD_HOME:-${AGENTSYSPERF_HOME:-$HOME/.agentsysperf}/vm_density}
@@ -41,6 +43,7 @@ DTO_REPO=${DTO_REPO:-https://github.com/intel/DTO.git}
 DTO_TAG=${DTO_TAG:-v1.2}
 KERNEL_WQS=${KERNEL_WQS:-3}
 STORE_GIB=${STORE_GIB:-40}
+FREE_1G_POOL=${FREE_1G_POOL:-1}
 VMD_DISKS_GIB=${VMD_DISKS_GIB:-256}
 GUEST_MEM=${GUEST_MEM:-2G}
 GUEST_VCPUS=${GUEST_VCPUS:-2}
@@ -282,6 +285,28 @@ stage_providers() {
 }
 
 # ---------------------------------------------------------------- store
+stage_pool() {
+    # The 2 MiB pool is sized per cell by run_experiment.py; this stage only returns memory that a
+    # boot-time 1 GiB pool keeps idle on the measured socket.
+    local p="/sys/devices/system/node/node$VMD_SOCKET/hugepages/hugepages-1048576kB"
+    if [ ! -d "$p" ]; then
+        log "pool: no 1 GiB huge page pool on this kernel"
+    else
+        local nr free; nr=$(cat "$p/nr_hugepages"); free=$(cat "$p/free_hugepages")
+        if [ "$nr" = 0 ]; then
+            log "pool: node $VMD_SOCKET has no 1 GiB pages"
+        elif [ "$FREE_1G_POOL" != 1 ]; then
+            log "pool: node $VMD_SOCKET keeps $nr x 1 GiB pages (FREE_1G_POOL=$FREE_1G_POOL)"
+        elif [ "$free" != "$nr" ]; then
+            log "pool: WARNING node $VMD_SOCKET has $((nr - free)) of $nr 1 GiB pages in use: not freed"
+        else
+            echo 0 | sudo tee "$p/nr_hugepages" >/dev/null
+            log "pool: node $VMD_SOCKET 1 GiB pages $nr -> $(cat "$p/nr_hugepages") ($nr GiB returned)"
+        fi
+    fi
+    log "pool: node $VMD_SOCKET free $(awk '/MemFree/ {printf "%d", $4/1048576}' "/sys/devices/system/node/node$VMD_SOCKET/meminfo") GiB, 2 MiB pool $(cat "/sys/devices/system/node/node$VMD_SOCKET/hugepages/hugepages-2048kB/nr_hugepages") pages"
+}
+
 stage_store() {
     sudo mkdir -p "$VMD_STORE"
     if mountpoint -q "$VMD_STORE"; then
@@ -345,17 +370,17 @@ stage_verify() {
     [ -x "$BIN/cloud-hypervisor" ] && log "verify: $("$BIN/cloud-hypervisor" --version | head -1)" || log "verify: binaries not built"
     [ -x "$BIN/offload_daemon" ] && LD_LIBRARY_PATH=$BIN "$BIN/offload_daemon" serve --help >/dev/null && log "verify: offload_daemon serve ok"
     [ -f "$BIN/VERSIONS" ] && sed 's/^/verify:   /' "$BIN/VERSIONS"
-    log "verify: socket $VMD_SOCKET cpus $(node_cpus), free $(awk '/MemFree/ {printf "%d", $4/1048576}' "/sys/devices/system/node/node$VMD_SOCKET/meminfo") GiB, 2 MiB pool $(cat "/sys/devices/system/node/node$VMD_SOCKET/hugepages/hugepages-2048kB/nr_hugepages") pages"
+    log "verify: socket $VMD_SOCKET cpus $(node_cpus), free $(awk '/MemFree/ {printf "%d", $4/1048576}' "/sys/devices/system/node/node$VMD_SOCKET/meminfo") GiB, 2 MiB pool $(cat "/sys/devices/system/node/node$VMD_SOCKET/hugepages/hugepages-2048kB/nr_hugepages") pages, 1 GiB pool $(cat "/sys/devices/system/node/node$VMD_SOCKET/hugepages/hugepages-1048576kB/nr_hugepages" 2>/dev/null || echo 0) pages"
     sed 's/^/verify:   /' "$VMD_HOME/host.env" | grep -E 'DTO_WQ_LIST|IAX_WQS|KERNEL_OFFLOAD|ACCEL_PENDING|VMD_DISKS|GUEST_'
     [ "$ACCEL_PENDING" = 1 ] && log "verify: WARNING WQ layout pending (see accel stage)"
     log "verify: done"
 }
 
-stages=("$@"); [ ${#stages[@]} -gt 0 ] || stages=(fetch qpl build guest accel providers store disks verify)
+stages=("$@"); [ ${#stages[@]} -gt 0 ] || stages=(fetch qpl build guest accel providers pool store disks verify)
 for s in "${stages[@]}"; do
     case $s in
-        fetch|qpl|build|guest|accel|providers|store|disks|verify) log "== $s"; "stage_$s" ;;
-        all) for t in fetch qpl build guest accel providers store disks verify; do log "== $t"; "stage_$t"; done ;;
+        fetch|qpl|build|guest|accel|providers|pool|store|disks|verify) log "== $s"; "stage_$s" ;;
+        all) for t in fetch qpl build guest accel providers pool store disks verify; do log "== $t"; "stage_$t"; done ;;
         *) die "unknown stage $s" ;;
     esac
 done

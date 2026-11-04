@@ -43,11 +43,12 @@ bash experiments/vm_density/host_setup.sh
 | guest | stages the guest kernel and initrd (any bzImage with virtio-blk) |
 | accel | configures the socket's DSA devices with `KERNEL_WQS` kernel dmaengine queues (for the providers) plus one shared user queue each, the socket's IAA devices with one shared user queue each, and disables the other sockets' devices. Needs the providers unloaded; if they cannot be unloaded the layout is deferred to after a reboot |
 | providers | loads `dcbm` and `uffd_dma` with offloading off (the runner turns it on for the dsa arms), unprivileged userfaultfd, performance governor, NUMA balancing off |
+| pool | frees the socket's idle 1 GiB huge page pool (`FREE_1G_POOL=0` keeps it) so the 2 MiB pool, which the runner sizes per cell, can grow to the full density; a boot-time 1 GiB pool returns at the next reboot |
 | store | mounts a tmpfs checkpoint store bound to the socket's memory node |
 | disks | creates and mounts an XFS loop file with reflink for the guest disks, so every sandbox's writable copy of a task image is a metadata operation rather than a copy |
 | verify | writes `$VMD_HOME/host.env` (paths, CPU list, `DTO_WQ_LIST`, IAA queues, store, disks, guest geometry, `KERNEL_OFFLOAD`) for the runner |
 
-The accel, providers and store stages use `sudo`. The accel stage switches
+The accel, providers, pool, store and disks stages use `sudo`. The accel stage switches
 the providers' offloading off and unloads them before touching the queues (an
 active provider pins its module, and unbinding a queue a provider holds has
 hung hosts); nothing may be using DMA at that point. A host whose boot scripts
@@ -129,14 +130,14 @@ with no daemon runs the session at 0.96 core-s of VMM time.
 ```bash
 python3 experiments/vm_density/run_experiment.py --quick      # 8 short cells, about 40 min
 python3 experiments/vm_density/run_experiment.py --screen     # phase 1, 64 cells, about 14 h
-python3 experiments/vm_density/run_experiment.py --confirm --densities 1,16,40   # phase 2, 3 reps
+python3 experiments/vm_density/run_experiment.py --confirm --densities 1,16,36   # phase 2, 3 reps
 python3 experiments/vm_density/run_experiment.py --densities 16 --engines cpu,dsaiaa --regime real
 ```
 
 `run_experiment.py` runs the cells of a matrix one after another with
 `vmfleet.py`. `--screen` is the screening ladder: `none`, `cpu` and `dsaiaa`
-at every density (1 2 4 8 16 24 32 40) under both launch patterns, then
-`dsa` and `iaa` at 1, 8, 24 and 40. `--confirm` repeats every arm and
+at every density (1 2 4 8 16 24 32 36) under both launch patterns, then
+`dsa` and `iaa` at 1, 8, 24 and 36. `--confirm` repeats every arm and
 pattern three times at the densities given (N=1, the knee of the screening
 curves and the cap). `--full` is every arm at every density and pattern. Any
 of `--densities`, `--engines`, `--launch`, `--regime`, `--reps` and
@@ -148,8 +149,9 @@ first.
 Before each cell the driver sizes the socket's 2 MiB huge page pool to the
 guests of the cell (one spare guest's worth on top, compaction and a cache
 drop if the first attempt falls short) and checks that the node has room
-beside the pool for the VMMs, the resident daemons (about 0.45 GiB each)
-and their checkpoints in the node-bound store, refusing the cell otherwise
+beside the pool for the VMMs, the resident daemons and their checkpoints
+in the node-bound store (about 1 GiB per sandbox: the raw reference image,
+the base checkpoint and the save), refusing the cell otherwise
 (`--force-memory` overrides), then reads the templates back into the page
 cache because growing the pool evicts them; after the cell the pool must
 come back whole and nothing of the cell may be left running. The driver and the
