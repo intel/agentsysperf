@@ -123,3 +123,43 @@ in 100 ms at 0.04 core-s with 920 UFFDIO_COPYs on DSA, diff checkpoints
 pause 9 ms (3.6 ms of daemon CPU), saves 65 ms; cpu staggered restores in
 188 ms at 0.26 core-s, diffs pause 13 ms (7.6 ms CPU), saves 115 ms; a slot
 with no daemon runs the session at 0.96 core-s of VMM time.
+
+## Running the matrix
+
+```bash
+python3 experiments/vm_density/run_experiment.py --quick      # 8 short cells, about 40 min
+python3 experiments/vm_density/run_experiment.py --screen     # phase 1, 64 cells, about 14 h
+python3 experiments/vm_density/run_experiment.py --confirm --densities 1,16,40   # phase 2, 3 reps
+python3 experiments/vm_density/run_experiment.py --densities 16 --engines cpu,dsaiaa --regime real
+```
+
+`run_experiment.py` runs the cells of a matrix one after another with
+`vmfleet.py`. `--screen` is the screening ladder: `none`, `cpu` and `dsaiaa`
+at every density (1 2 4 8 16 24 32 40) under both launch patterns, then
+`dsa` and `iaa` at 1, 8, 24 and 40. `--confirm` repeats every arm and
+pattern three times at the densities given (N=1, the knee of the screening
+curves and the cap). `--full` is every arm at every density and pattern. Any
+of `--densities`, `--engines`, `--launch`, `--regime`, `--reps` and
+`--duration` overrides the mode, and `--cell-args` passes extra options to
+the controller. Cells are ordered rep, engine (`none cpu iaa dsa dsaiaa`),
+density, launch pattern, so the arms without kernel copy offload finish
+first.
+
+Before each cell the driver sizes the socket's 2 MiB huge page pool to the
+guests of the cell (one spare guest's worth on top, compaction and a cache
+drop if the first attempt falls short) and checks that the node has room
+beside the pool for the VMMs, the resident daemons (about 0.45 GiB each)
+and their checkpoints in the node-bound store, refusing the cell otherwise
+(`--force-memory` overrides), then reads the templates back into the page
+cache because growing the pool evicts them; after the cell the pool must
+come back whole and nothing of the cell may be left running. The driver and the
+controller run on another socket than the measured one. A cell with a
+`result.json` is skipped, so an interrupted run resumes with the same
+command (`--rerun` repeats them); refused and failed cells are retried.
+`--dry-run` lists the cells and the time they need.
+
+Output under `$VMD_HOME/results/<mode>/`: one directory per cell (the
+controller's `result.json` and logs plus `cell.log`), `run.json` (arguments,
+`host.env`, binary versions) and `cells.json`, one record per cell with its
+status, exit code, pool size, timing and printed summary, rewritten after
+every cell.

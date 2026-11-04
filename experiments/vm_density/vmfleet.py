@@ -901,7 +901,8 @@ def main():
 
     atexit.register(cleanup)
     for s in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
-        signal.signal(s, lambda *_: sys.exit(130))
+        if signal.getsignal(s) != signal.SIG_IGN:      # keep nohup's immunity
+            signal.signal(s, lambda *_: sys.exit(130))
     sys.exit(cell.run())
 
 
