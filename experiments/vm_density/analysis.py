@@ -226,6 +226,8 @@ def point(cells):
          "vmm_core_s_per_session": m(lambda c: vm(c)["core_s_per_session"]["vmm"]),
          "daemon_core_s_per_session": m(lambda c: vm(c)["core_s_per_session"]["daemon"]),
          "node_cpu_busy": m(lambda c: vm(c)["node_cpu_busy"]["steady_mean"]),
+         "node_cpu_busy_pct": m(lambda c: None if vm(c)["node_cpu_busy"]["steady_mean"] is None
+                                 else vm(c)["node_cpu_busy"]["steady_mean"] * 100),
          "node_free_min_mib": m(lambda c: vm(c)["node_free_min_mib"]),
          "store_max_mib": m(lambda c: vm(c)["store_max_mib"]),
          "fallbacks": sum(vm(c)["fallbacks"] for c in cells),
@@ -380,7 +382,7 @@ def print_curves(curves, kn):
             ("p99", "restore_p99_ms", "{:>7.0f}"), ("rcpu", "restore_cpu_core_s", "{:>5.2f}"),
             ("ckpt p50", "ckpt_pause_p50_ms", "{:>8.1f}"), ("p99", "ckpt_pause_p99_ms", "{:>7.0f}"),
             ("ckcpu", "ckpt_cpu_ms", "{:>5.1f}"), ("save", "save_p50_ms", "{:>5.0f}"),
-            ("core-s", "core_s_per_session", "{:>6.2f}"), ("busy", "node_cpu_busy", "{:>5.2f}"),
+            ("core-s", "core_s_per_session", "{:>6.2f}"), ("busy%", "node_cpu_busy_pct", "{:>5.1f}"),
             ("fb", "fallbacks", "{:>4}"), ("fail", "sessions_failed", "{:>4}")]
     knee_at = {k["curve"]: k["density"] for k in kn}
     for key, pts in curves.items():
@@ -411,7 +413,7 @@ def plots(curves, outdir):
                ("restore_p99_ms", "restore wall p99 (ms)", "restore_p99"),
                ("ckpt_pause_p99_ms", "checkpoint pause p99 (ms)", "ckpt_pause_p99"),
                ("core_s_per_session", "host core-s per session (VMM + daemon)", "core_s"),
-               ("node_cpu_busy", "socket CPU busy (steady state)", "node_busy")]
+               ("node_cpu_busy_pct", "socket CPU busy % (steady state)", "node_busy")]
     colors = {"none": "0.5", "cpu": "tab:blue", "iaa": "tab:green", "dsa": "tab:orange", "dsaiaa": "tab:red"}
     files = []
     for k, title, name in metrics:
