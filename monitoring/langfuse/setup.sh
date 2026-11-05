@@ -11,6 +11,8 @@
 #
 # Usage:
 #   cd /path/to/agentsysperf
+#   export LANGFUSE_NEXTAUTH_SECRET=$(openssl rand -base64 32)   # once; keep both
+#   export LANGFUSE_SALT=$(openssl rand -base64 32)              # stable (SALT hashes API keys)
 #   bash monitoring/langfuse/setup.sh
 #
 # After running, export the printed env vars to enable tracing:

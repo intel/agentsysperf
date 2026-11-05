@@ -146,7 +146,13 @@ class PerfSpectMeasurement:
         setting brings the floor below ~8s.
     """
 
+    name = "perfspect"
     layer = "perfspect"
+    #: ``scope="system"`` (the default) collects node-wide.
+    node_scoped = True
+    #: Drives perf against the same PMU as ``l3_perf``; see
+    #: ``runner.PMU_OWNER_PRIORITY``.
+    pmu_exclusive = True
 
     def __init__(
         self,
@@ -396,6 +402,10 @@ class PerfSpectMeasurement:
 
         logger.warning(f"PerfSpect binary not found in any candidate location. Searched: {[str(c) for c in candidates]}")
         return None
+
+    def pmu_available(self) -> bool:
+        """Whether the binary was found; read by the PMU owner election."""
+        return bool(self._available)
 
     def _check_available(self) -> bool:
         """Check if PerfSpect can run on this system."""

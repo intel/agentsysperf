@@ -51,11 +51,14 @@
 #   NODE=1 ./run_density_test_cwf.sh               # pin to NUMA node1
 #   DENSITIES="4 8 16 24" ./run_density_test_cwf.sh
 #   TASK=distribution-search ./run_density_test_cwf.sh
+#   REPLAY=1 FIXTURE=<your fixture.jsonl> ./run_density_test_cwf.sh
 #   MAX_CONCURRENCY=64 ./run_density_test_cwf.sh   # after fixing the pool
 set -euo pipefail
 
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HARBOR="${HARBOR:-$REPO/.venv/bin/harbor}"
+# harbor sends usage telemetry unless HARBOR_TELEMETRY is off; default it off.
+export HARBOR_TELEMETRY="${HARBOR_TELEMETRY:-0}"
 TASK="${TASK:-overfull-hbox}"
 NODE="${NODE:-0}"
 DENSITIES="${DENSITIES:-1 2 4 8 16}"
@@ -63,7 +66,12 @@ REPLICATES="${REPLICATES:-1}"
 OUTDIR="${OUTDIR:-$REPO/harness/results/density_cwf}"
 REPLAY="${REPLAY:-0}"
 PROXY_PORT="${PROXY_PORT:-4001}"
-FIXTURE="${FIXTURE:-$REPO//path/to/your/fixture.jsonl}"
+# Only REPLAY=1 serves a fixture, and it has no default: it must be your own
+# recording made with terminus-2 (fixtures/README.md).
+FIXTURE="${FIXTURE:-}"
+if [[ "$REPLAY" == "1" ]]; then
+    : "${FIXTURE:?set FIXTURE to a fixture recorded with terminus-2 (REPLAY=1)}"
+fi
 
 # Concurrency ceiling. 27 is the measured Docker address-pool limit; raise only
 # after configuring default-address-pools (see header).

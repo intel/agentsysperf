@@ -14,8 +14,12 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HARNESS="$REPO/harness"
 HARBOR="${HARBOR:-$REPO/.venv/bin/harbor}"
+# harbor sends usage telemetry unless HARBOR_TELEMETRY is off; default it off.
+export HARBOR_TELEMETRY="${HARBOR_TELEMETRY:-0}"
 TASK="${TASK:-$HARNESS/datasets/terminal-bench-2/train-fasttext}"
 OUTDIR="${OUTDIR:-$HARNESS/results/numa_comparison_tb2}"
+# Task-scoped container lookup/teardown (never other users' containers).
+source "$REPO/harness/scripts/harbor_reap.sh"
 
 # NUMA node CPU lists (physical cores only, no HT for cleaner measurement)
 NODE0_CPUS="0-42"
@@ -36,8 +40,8 @@ run_on_node() {
 
     mkdir -p "$OUTDIR/$LABEL"
 
-    # Clean any leftover containers
-    docker ps -a --filter "name=harbor" -q | xargs -r docker rm -f 2>/dev/null || true
+    # Clean leftovers of this task's trials
+    reap_harbor_containers "$TASK"
 
     # Run Harbor with NUMA pinning via Docker runtime options
     # Harbor uses --run-args to pass extra Docker options
@@ -54,7 +58,7 @@ run_on_node() {
     echo "Waiting for container..."
     CONTAINER_ID=""
     for i in $(seq 1 30); do
-        CONTAINER_ID=$(docker ps --filter "name=harbor" --format "{{.ID}}" 2>/dev/null | head -1)
+        read -r CONTAINER_ID < <(harbor_container_ids "$TASK") || true
         if [ -n "$CONTAINER_ID" ]; then
             break
         fi

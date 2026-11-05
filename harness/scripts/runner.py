@@ -158,6 +158,9 @@ def run_harbor(spec: RunSpec, proxy_port: int) -> tuple[str, float]:
         'OPENAI_API_BASE': api_base,
         'OPENAI_BASE_URL': api_base,
     })
+    # harbor sends usage telemetry unless HARBOR_TELEMETRY is off. Default it
+    # off; an explicit HARBOR_TELEMETRY in the caller's environment still wins.
+    env.setdefault('HARBOR_TELEMETRY', '0')
 
     # Build the harbor command
     jobs_dir = spec.output_dir / 'jobs'

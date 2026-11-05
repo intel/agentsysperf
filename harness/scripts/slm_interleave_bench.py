@@ -21,6 +21,7 @@ The SLM runs as a background Python process generating tokens continuously.
 The TB2 task runs via Harbor concurrently on the same NUMA node.
 perf stat -C monitors combined activity.
 """
+import re
 import subprocess
 import tempfile
 import time
@@ -72,19 +73,44 @@ while True:
 """
 
 
+# The TB2 tasks this script runs alongside the SLM.
+TASKS = ("path-tracing", "train-fasttext")
+
+
+def _harbor_project_prefix(task: str) -> str:
+    """The compose-project prefix harbor gives a task's trials.
+
+    harbor names each trial's project ``<task>__<7-char id>__env``, where
+    ``<task>`` is the task directory name cut to 32 characters with trailing
+    '-'/'_' stripped, lowercased, and anything outside [a-z0-9_-] turned into
+    '-'. Same derivation as harbor_reap.sh, which the shell drivers source.
+    """
+    name = Path(task).name[:32].rstrip("_-").lower()
+    name = re.sub(r"[^a-z0-9_-]", "-", name)
+    return name if re.match(r"[a-z0-9]", name) else "0" + name
+
+
 def _clean_containers():
-    """Remove leftover compose containers from a previous test.
+    """Remove leftover harbor trial containers of TASKS from a previous test.
+
+    Scoped to those tasks' compose projects. The filter used to be
+    `label=com.docker.compose.project` with no value, which force-removed every
+    compose container on the host, other users' included.
 
     Was `docker ps -q | xargs -r docker rm -f` under a shell. Splitting the
     pipeline into two Python steps drops the shell entirely and, as a bonus,
     fixes the silent case where `xargs -r` swallowed a docker failure: the ids
     now come back as data we can see.
     """
-    ids = subprocess.run(
-        ["docker", "ps", "-a", "--filter",
-         "label=com.docker.compose.project", "-q"],
+    prefixes = "|".join(re.escape(_harbor_project_prefix(t)) for t in TASKS)
+    project_re = re.compile(rf"^(?:{prefixes})__[a-z0-9]{{7}}__env$")
+    listing = subprocess.run(
+        ["docker", "ps", "-a", "--filter", "label=com.docker.compose.project",
+         "--format", '{{.ID}} {{.Label "com.docker.compose.project"}}'],
         capture_output=True, text=True,
-    ).stdout.split()
+    ).stdout
+    ids = [cid for cid, _, project in (line.partition(" ") for line in listing.splitlines())
+           if project_re.match(project)]
     if ids:
         subprocess.run(["docker", "rm", "-f", *ids], capture_output=True)
 
@@ -131,8 +157,12 @@ def run_test(label, task=None):
         # Start TB2 task concurrently
         harbor_cmd = [HARBOR, "run", "-p", f"{DATASET}/{task}", "-a", "oracle",
                       "-n", "1", "--yes", "--extra-docker-compose", str(COMPOSE)]
+        # harbor sends usage telemetry unless HARBOR_TELEMETRY is off. Default
+        # it off; an explicit HARBOR_TELEMETRY in the environment still wins.
+        harbor_env = dict(os.environ)
+        harbor_env.setdefault("HARBOR_TELEMETRY", "0")
         harbor_proc = subprocess.Popen(
-            harbor_cmd,
+            harbor_cmd, env=harbor_env,
             stdout=open(f"{outpath}/harbor_stdout.txt", "w"),
             stderr=open(f"{outpath}/harbor_stderr.txt", "w"))
         print(f"  Harbor ({task}) PID: {harbor_proc.pid}")

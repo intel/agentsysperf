@@ -18,7 +18,7 @@ apt install python3.12-venv  # Ubuntu/Debian
 ### 1b. Clone & Setup
 
 ```bash
-git clone https://github.com/intel-sandbox/agentsysperf.git
+git clone https://github.com/intel/agentsysperf.git
 cd agentsysperf
 
 python3.12 -m venv .venv
@@ -60,9 +60,12 @@ agentsysperf run --benchmark synthetic_cpu --num-tasks 9
 Check the run:
 
 ```bash
-agentsysperf db ls                      # List runs
-agentsysperf db show synthetic_cpu_*    # Details of one run
+agentsysperf db ls                      # List runs, newest first
+agentsysperf db show <run_id>           # Details of one run (exact id from db ls)
 ```
+
+`db show` takes an exact run id, not a pattern. The run itself prints its id
+on the `Store:` line (`inspect: agentsysperf db show synthetic_cpu_<timestamp>`).
 
 ### 2b. Scale Experiment (Still offline)
 
@@ -130,14 +133,13 @@ L5 (Needs Intel tools):   Per-span TMA, RAPL, PMU events (optional)
 Check which layers are available on your system:
 
 ```bash
-# Read a run
-agentsysperf db show synthetic_cpu_* | grep -A 20 measurements
+# Read a run (exact run id from `agentsysperf db ls`)
+agentsysperf db show <run_id>
 
-# Output example:
-# measurements:
-#   l1: 9 records (per-span CPU %, memory)
-#   l3: 9 records (per-span IPC, cache miss)
-#   l1_system: 5 records (node CPU/runqueue/memory)
+# The last line counts records per layer, e.g. for 9 synthetic_cpu tasks:
+#   measurements by layer: {'l1': 9, 'l1_system': 9, 'l3': 9}
+# A layer that is missing collected nothing on this host; the run's own
+# "measurements N/4 active (...)" line says why.
 ```
 
 ### 3c. Understand Analyzers
@@ -202,14 +204,18 @@ Record an LLM trajectory once, replay it free thereafter:
 
 ```bash
 # Step 1: Record (costs tokens, time, API calls)
-agentsysperf run -b terminal-bench -n 2 --record /tmp/fixture.jsonl
+agentsysperf run -b terminal-bench --tasks task-a,task-b --record /tmp/fixture.jsonl
 
 # Step 2: Replay (free, deterministic)
-agentsysperf run -b terminal-bench -n 2 --replay /tmp/fixture.jsonl
+agentsysperf run -b terminal-bench --tasks task-a,task-b --replay /tmp/fixture.jsonl
 
 # Step 3: Replay again (still free)
-agentsysperf run -b terminal-bench -n 2 --replay /tmp/fixture.jsonl
+agentsysperf run -b terminal-bench --tasks task-a,task-b --replay /tmp/fixture.jsonl
 ```
+
+`--replay` requires `--tasks`, naming the same tasks (and the same agent) the
+fixture was recorded with. `-n`/`--full` pick tasks from the dataset, so they
+cannot select a replay; use them only to record.
 
 ### 4d. Generate Report
 
@@ -274,10 +280,13 @@ agentsysperf sweep run --dry-run
 
 **Step 1: Tag spans with phases**
 ```python
-with track_span("inference", phase="reason"):
+from src.runner import track_span
+
+# ctx is the run's RunContext; span ids are unique within a run.
+with track_span(ctx, "task-1::reason", kind="llm_call", phase="reason"):
     response = agent.invoke(query)
 
-with track_span("tools", phase="act"):
+with track_span(ctx, "task-1::act", kind="tool_call", phase="act"):
     result = tool.execute()
 ```
 
@@ -326,16 +335,16 @@ agentsysperf report <run_id> --format md     # Generate report
 # Dashboard
 streamlit run demo_app.py --server.port 7860 --server.address 0.0.0.0
 
-# Recording & Replay
-agentsysperf run -b terminal-bench -n 2 --record /tmp/fixture.jsonl
-agentsysperf run -b terminal-bench -n 2 --replay /tmp/fixture.jsonl
+# Recording & Replay (--replay needs the --tasks you recorded)
+agentsysperf run -b terminal-bench --tasks task-a,task-b --record /tmp/fixture.jsonl
+agentsysperf run -b terminal-bench --tasks task-a,task-b --replay /tmp/fixture.jsonl
 ```
 
 ---
 
 ## Troubleshooting: Common Issues
 
-### "measurements 3/5 active" — Why is L3 missing?
+### "measurements 2/4 active" — Why is L3 missing?
 
 **Cause:** `perf` access requires `kernel.perf_event_paranoid <= 1` or root.
 
@@ -352,20 +361,6 @@ cat /proc/sys/kernel/perf_event_paranoid
 # Output: 2 or higher means `perf` blocked for non-root
 ```
 
-### "ERROR: run_task: agent_invoker not found"
-
-**Cause:** You're running a benchmark that needs an LLM (Terminal-Bench), but no agent provider is configured.
-
-**Fix:**
-```bash
-# Use synthetic_cpu (no LLM needed)
-agentsysperf run --benchmark synthetic_cpu --num-tasks 3
-
-# Or set up LLM (OpenAI)
-export OPENAI_API_KEY=sk-...
-agentsysperf run -b terminal-bench --num-tasks 2 --model gpt-4o-mini
-```
-
 ### "Dashboard shows empty tabs"
 
 **Cause:** No data in the store, or wrong data source.
@@ -374,7 +369,7 @@ agentsysperf run -b terminal-bench --num-tasks 2 --model gpt-4o-mini
 ```bash
 # Is the store empty?
 agentsysperf db ls
-# Output: (empty) — yes
+# Output: "No runs in the store." — yes
 
 # Populate it
 agentsysperf run --benchmark synthetic_cpu --num-tasks 3
@@ -384,19 +379,15 @@ agentsysperf sweep run --dry-run
 streamlit run demo_app.py --server.port 7860 --server.address 0.0.0.0
 ```
 
-### "verify_engaged() failed: counter not advertised"
+### `run_profile_verify.py`: "not advertised by any installed HardwareTelemetryPlugin"
 
-**Cause:** You tried to use an Xeon optimization profile (e.g., `amx_only`), but your system doesn't support it or telemetry can't read the counter.
-
-**Fix:**
-```bash
-# Use the base profile (always works)
-agentsysperf run --benchmark synthetic_cpu --num-tasks 3 --profile base
-
-# Or check your hardware
-lscpu | grep -i avx
-lscpu | grep -i amx
-```
+**Cause:** Expected today. `examples/run_profile_verify.py` checks the five Xeon
+profiles, which declare derived metric names (`amx_active_cycle_ratio`,
+`hugepage_fault_ratio`, ...) that no shipped telemetry plugin advertises, so
+engagement verification fails rather than credit an unmeasured claim.
+`agentsysperf run` neither applies nor verifies profiles (it has no `--profile`
+option), so benchmark runs are not affected. See the status note under
+*Examples* in `README.md` and `docs/measurement_layers.md`.
 
 ### EMON hardware analysis
 

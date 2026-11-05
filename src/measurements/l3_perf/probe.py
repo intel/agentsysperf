@@ -72,6 +72,11 @@ class L3PerfMeasurement(NullMeasurement):
 
     name: str = "l3_perf"
     layer: str = "l3"
+    #: A discovered (zero-arg) instance runs ``perf stat -a``: every CPU on the
+    #: node, not this run (see ``RunConfig.exclude_node_scoped``).
+    node_scoped: bool = True
+    #: Programs the PMU's hardware counters; see ``runner.PMU_OWNER_PRIORITY``.
+    pmu_exclusive: bool = True
 
     def __init__(
         self,
@@ -121,6 +126,11 @@ class L3PerfMeasurement(NullMeasurement):
         self._available = False
 
     # ── Lifecycle ────────────────────────────────────────────────────
+
+    def pmu_available(self) -> bool:
+        """Whether this host lets ``perf`` count; read by the PMU owner election
+        before :meth:`start`, which is where ``_available`` is otherwise set."""
+        return perf_available()
 
     def start(self, *, run_id: str, output_dir: Path) -> None:
         """Spawn the long-lived perf-stat subprocess.

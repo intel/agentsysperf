@@ -53,7 +53,7 @@ examples/                   End-to-end driver scripts
 experiments/scaling/        Density-contention experiment (synthetic workers)
 harness/                    Working benchmark harness; results/ holds
                             measured baseline data on Xeon 6787P
-fixtures/                      Canonical replay fixtures (TB2 Sonnet, etc.)
+fixtures/                      Replay fixture format placeholder; record your own (fixtures/README.md)
 docs/benchmark/                Replay methodology documentation
 ```
 
@@ -72,6 +72,9 @@ docs/benchmark/                Replay methodology documentation
   needs `kernel.perf_event_paranoid <= 1`; platform detection uses `lscpu`. The
   `perfspect` measurement additionally requires Intel tools (PerfSpect) and is
   opt-in — a run without it still completes, with fewer measurement layers.
+  `l3_perf` and `perfspect` program the same hardware counters, so a run keeps
+  one of them: `l3_perf` by default, `perfspect` with
+  `AGENTSYSPERF_PMU_OWNER=perfspect`.
   Deeper Intel EMON/EDP telemetry is a separate plugin, not core.
 
 ```bash
@@ -288,7 +291,7 @@ The `harness/datasets/` directory is excluded from the repository due to size. S
 Crisp commands for everything added recently. Activate the env first:
 
 ```bash
-source ~/.cache/pypoetry/virtualenvs/agentsysperf-*-py3.12/bin/activate   # or your venv
+source .venv/bin/activate                                              # your venv
 pip install -e ".[dashboard,trace]"                                    # extras for UI + Langfuse
 ```
 
@@ -353,6 +356,11 @@ print('knee:', v['evidence'].get('knee'))
 
 The sweep renders in **both** dashboards: the demo app's "Concurrency Sweep"
 page (Terminal-Bench / Tau-Bench sections) and the live dashboard.
+
+The `harbor` CLI sends usage telemetry by default. Every `harbor run` that
+AgentSysPerf launches (`sweep run` and the `harness/scripts/` drivers) sets
+`HARBOR_TELEMETRY=0` unless `HARBOR_TELEMETRY` is already set in your
+environment, so `export HARBOR_TELEMETRY=1` opts back in.
 
 The record/replay proxy can also be run standalone (record once, replay byte-identically):
 
@@ -458,14 +466,14 @@ refuses to touch `harness/results/`.
 
 ```bash
 # 1. DRY-RUN — scan + report what would migrate, writes nothing.
-poetry run python scripts/migrate_to_unified_store.py                       # default: <repo>/docs
-poetry run python scripts/migrate_to_unified_store.py --source-root /path/to/your/runs
+python scripts/migrate_to_unified_store.py                       # default: <repo>/docs
+python scripts/migrate_to_unified_store.py --source-root /path/to/your/runs
 
 # 2. APPLY — migrate into $AGENTSYSPERF_HOME (originals left byte-identical).
-poetry run python scripts/migrate_to_unified_store.py --source-root /path/to/your/runs --apply
+python scripts/migrate_to_unified_store.py --source-root /path/to/your/runs --apply
 
 # 3. VERIFY — parity gate: store >= legacy per run.
-poetry run python scripts/verify_backfill_parity.py
+python scripts/verify_backfill_parity.py
 ```
 
 Notes:

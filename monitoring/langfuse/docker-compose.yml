@@ -14,6 +14,14 @@ version: "3.9"
 # Start:  docker compose -f monitoring/langfuse/docker-compose.yml up -d
 # Stop:   docker compose -f monitoring/langfuse/docker-compose.yml down
 # Logs:   docker compose -f monitoring/langfuse/docker-compose.yml logs -f langfuse-web
+#
+# Requires LANGFUSE_NEXTAUTH_SECRET and LANGFUSE_SALT (see langfuse-web below);
+# compose refuses to start without them.
+#
+# NOTE: Langfuse v3 (langfuse/langfuse:3) also needs ClickHouse, Redis and
+# S3-compatible blob storage, plus the langfuse-worker container. This file
+# runs only the web container and Postgres, so it is not a complete v3
+# deployment; use Langfuse's own self-hosting docker-compose.yml for that.
 
 services:
   langfuse-web:
@@ -23,14 +31,14 @@ services:
     environment:
       - DATABASE_URL=postgresql://langfuse:langfuse@langfuse-db:5432/langfuse
       - NEXTAUTH_URL=${LANGFUSE_HOST:-http://localhost:7862}
-      # These sign session cookies and hash API keys. The defaults are public
-      # in this repo, so anyone can forge a session against a deployment that
-      # keeps them -- fine for a localhost-only dev instance, not otherwise.
-      # Override both before exposing this service on any network:
+      # These sign session cookies and hash API keys, so there are no
+      # defaults: a default published in this repo would let anyone forge a
+      # session against a deployment that kept it. Generate both once and
+      # keep them stable across restarts (SALT hashes the stored API keys):
       #   export LANGFUSE_NEXTAUTH_SECRET=$(openssl rand -base64 32)
       #   export LANGFUSE_SALT=$(openssl rand -base64 32)
-      - NEXTAUTH_SECRET=${LANGFUSE_NEXTAUTH_SECRET:-agentsysperf-langfuse-dev-only}
-      - SALT=${LANGFUSE_SALT:-agentsysperf-salt-dev-only}
+      - NEXTAUTH_SECRET=${LANGFUSE_NEXTAUTH_SECRET:?set LANGFUSE_NEXTAUTH_SECRET (generate one with openssl rand -base64 32)}
+      - SALT=${LANGFUSE_SALT:?set LANGFUSE_SALT (generate one with openssl rand -base64 32)}
       - TELEMETRY_ENABLED=false
       - LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES=false
     depends_on:
@@ -39,7 +47,11 @@ services:
     restart: unless-stopped
 
   langfuse-db:
-    image: postgres:alpine
+    # Pinned major. The floating tag moves to each new PostgreSQL major, which
+    # cannot start on a data directory initialised by the previous one, and
+    # the 18 images keep their data outside /var/lib/postgresql/data, where
+    # the volume below is mounted.
+    image: postgres:17-alpine
     environment:
       - POSTGRES_USER=langfuse
       - POSTGRES_PASSWORD=langfuse

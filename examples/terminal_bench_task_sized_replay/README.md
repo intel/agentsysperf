@@ -45,5 +45,5 @@ select specific tasks.
 ```bash
 python examples/terminal_bench_task_sized_replay/sweep_total_cores.py \
   --replay /path/to/your/fixture.jsonl \
-  --slots 12 24 48 96
+  --slots-values 12,24,48,96
 ```
