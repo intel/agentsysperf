@@ -41,6 +41,9 @@ QPL_REPO=${QPL_REPO:-https://github.com/intel/qpl.git}
 QPL_TAG=${QPL_TAG:-v1.9.0}
 DTO_REPO=${DTO_REPO:-https://github.com/intel/DTO.git}
 DTO_TAG=${DTO_TAG:-v1.2}
+# fix applied on top of DTO_TAG by the fetch stage (DTO_PATCH= applies none): see patches/
+DTO_PATCH=${DTO_PATCH-$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/patches/dto-probe-completion-record.diff}
+VMD_SYMBOLS=${VMD_SYMBOLS:-1}   # keep debug info in the release binaries (dmesg offsets and cores stay readable)
 KERNEL_WQS=${KERNEL_WQS:-3}
 STORE_GIB=${STORE_GIB:-40}
 FREE_1G_POOL=${FREE_1G_POOL:-1}
@@ -103,6 +106,16 @@ stage_fetch() {
     log "fetch: cloud-hypervisor at $(git -C "$CH_SRC" log -1 --format='%h %s' | cut -c1-80)"
     clone_at "$QPL_SRC" "$QPL_REPO" "$QPL_TAG" recursive
     clone_at "$DTO_SRC" "$DTO_REPO" "$DTO_TAG"
+    if [ -n "$DTO_PATCH" ]; then
+        [ -f "$DTO_PATCH" ] || die "fetch: DTO_PATCH $DTO_PATCH not found"
+        if git -C "$DTO_SRC" apply --check "$DTO_PATCH" 2>/dev/null; then
+            git -C "$DTO_SRC" apply "$DTO_PATCH" && log "fetch: applied $(basename "$DTO_PATCH") to DTO"
+        elif git -C "$DTO_SRC" apply -R --check "$DTO_PATCH" 2>/dev/null; then
+            log "fetch: DTO already carries $(basename "$DTO_PATCH")"
+        else
+            die "fetch: $(basename "$DTO_PATCH") does not apply to DTO $DTO_TAG"
+        fi
+    fi
 }
 
 # ---------------------------------------------------------------- qpl
@@ -129,19 +142,26 @@ stage_build() {
     local lib; lib=$(qpl_lib); [ -n "$lib" ] || die "build: QPL not built (run the qpl stage)"
     export QPL_INCLUDE_DIR=$QPL_SRC/include QPL_LIB_DIR=$(dirname "$lib") DTO_SRC_DIR=$DTO_SRC
     export CARGO_TARGET_DIR=$VMD_HOME/target
+    if [ "$VMD_SYMBOLS" = 1 ]; then
+        # the daemon crashed at startup during the screening ladder and the stripped binary
+        # made the dmesg offsets unreadable; debug info costs nothing at run time
+        export CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=1
+    fi
     log "build: cargo build (cloud-hypervisor, ch-remote, offload_daemon +qpl +dto) in $CARGO_TARGET_DIR"
     (cd "$CH_SRC" && "$CARGO" build --release -p cloud-hypervisor --bins -p offload_daemon \
         --features offload_daemon/qpl,offload_daemon/dto > "$VMD_HOME/cargo-build.log" 2>&1) \
         || die "build: cargo failed, see $VMD_HOME/cargo-build.log"
     mkdir -p "$BIN"
     install -m 755 "$CARGO_TARGET_DIR"/release/{cloud-hypervisor,ch-remote,offload_daemon} "$BIN/"
-    local so; so=$(find "$CARGO_TARGET_DIR/release/build" -path '*offload_daemon-*/out/dto/libdto_explicit.so' | head -1)
+    # the newest build-script output: a profile change gives the daemon a new out dir and the old one stays
+    local so; so=$(find "$CARGO_TARGET_DIR/release/build" -path '*offload_daemon-*/out/dto/libdto_explicit.so' -printf '%T@ %p\n' \
+        | sort -rn | head -1 | cut -d' ' -f2-)
     [ -n "$so" ] || die "build: libdto_explicit.so not found under $CARGO_TARGET_DIR"
     install -m 644 "$so" "$BIN/"
     {
         echo "cloud-hypervisor $CH_REPO $CH_BRANCH $(git -C "$CH_SRC" rev-parse HEAD)"
         echo "qpl $QPL_REPO $QPL_TAG $(git -C "$QPL_SRC" rev-parse HEAD)"
-        echo "dto $DTO_REPO $DTO_TAG $(git -C "$DTO_SRC" rev-parse HEAD)"
+        echo "dto $DTO_REPO $DTO_TAG $(git -C "$DTO_SRC" rev-parse HEAD)${DTO_PATCH:+ +$(basename "$DTO_PATCH")}"
         echo "rustc $("$(dirname "$CARGO")/rustc" --version 2>/dev/null || rustc --version)"
         echo "built $(date -Is) on $(hostname) $(uname -r)"
     } > "$BIN/VERSIONS"

@@ -37,9 +37,9 @@ bash experiments/vm_density/host_setup.sh
 
 | stage | what it does |
 |---|---|
-| fetch | clones Cloud Hypervisor (`bravindr/cloud-hypervisor`, branch `dsa-integration`, pinned revision), Intel QPL v1.9.0 and Intel DTO v1.2 into `$VMD_HOME` |
+| fetch | clones Cloud Hypervisor (`bravindr/cloud-hypervisor`, branch `dsa-integration`, pinned revision), Intel QPL v1.9.0 and Intel DTO v1.2 into `$VMD_HOME`, then applies `patches/dto-probe-completion-record.diff` to DTO (its write-submission probe left a DMA completion record on the stack and crashed the daemon at startup when the shared queue was saturated) |
 | qpl | builds the static QPL library |
-| build | `cargo build --release` of the VMM, `ch-remote` and `offload_daemon` with the `qpl` and `dto` features (DTO is built by the daemon's build script); binaries and `libdto_explicit.so` land in `$VMD_HOME/bin`, provenance in `bin/VERSIONS` |
+| build | `cargo build --release` of the VMM, `ch-remote` and `offload_daemon` with the `qpl` and `dto` features (DTO is built by the daemon's build script); binaries and `libdto_explicit.so` land in `$VMD_HOME/bin`, provenance in `bin/VERSIONS`; the release binaries keep their debug info (`VMD_SYMBOLS=0` strips them) |
 | guest | stages the guest kernel and initrd (any bzImage with virtio-blk) |
 | accel | configures the socket's DSA devices with `KERNEL_WQS` kernel dmaengine queues (for the providers) plus one shared user queue each, the socket's IAA devices with one shared user queue each, and disables the other sockets' devices. Needs the providers unloaded; if they cannot be unloaded the layout is deferred to after a reboot |
 | providers | loads `dcbm` and `uffd_dma` with offloading off (the runner turns it on for the dsa arms), unprivileged userfaultfd, performance governor, NUMA balancing off |
