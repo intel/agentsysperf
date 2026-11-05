@@ -32,5 +32,4 @@ Design documentation, methodology references, and guides.
 
 | Document | Purpose |
 |----------|---------|
-| `FIXTURES.md` | Fixture registry (which fixtures exist, their provenance) |
-| `RUNNING_FIXTURES.md` | How to deploy and run the replay proxy on remote hosts |
+| `../fixtures/README.md` | Replay fixtures: what ships (a format placeholder), recording your own, replaying it |

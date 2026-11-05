@@ -84,7 +84,7 @@ _write_lock = threading.Lock()
 # CRITICAL — these replacement strings are part of what gets hashed into the
 # trial_key, so they MUST match byte-for-byte the proxy that RECORDED the
 # fixture being replayed. These are the canonical strip patterns for
-# Terminal-Bench; other benchmarks use pluggable keyers (see keying.py).
+# Terminal-Bench.
 _CANON_STRIPS = [
     (re.compile(r"Current terminal state:.*", re.DOTALL), "[TERMINAL_STATE_STRIPPED]"),
     (re.compile(r"[a-z]+@[a-f0-9]{8,}:[\S]*[#$]"), "[SHELL_PROMPT]"),
@@ -364,6 +364,10 @@ def main(argv: list[str] | None = None) -> None:
                    help="Serve responses from this specific fixture trial key "
                         "(ignores prompt hash matching). Use for flexible replay.")
     args = p.parse_args(argv)
+    # Record mode appends every upstream response to the fixture file. Without
+    # one the proxy would start, then fail every call it was asked to record.
+    if args.mode == "record" and args.fixture is None:
+        p.error("--fixture is required when --mode record")
 
     _MODE = args.mode
     _UPSTREAM_URL = args.upstream.rstrip("/")

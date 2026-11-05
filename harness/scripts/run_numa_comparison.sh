@@ -14,6 +14,8 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HARNESS="$REPO/harness"
 HARBOR="${HARBOR:-$REPO/.venv/bin/harbor}"
+# harbor sends usage telemetry unless HARBOR_TELEMETRY is off; default it off.
+export HARBOR_TELEMETRY="${HARBOR_TELEMETRY:-0}"
 TASK_PATH="datasets/terminal-bench-2/train-fasttext"
 OUTDIR="results/numa_comparison_tb2"
 CONFIGS="configs"
@@ -25,6 +27,9 @@ declare -A NODE_CPUS
 NODE_CPUS[0]="0-42"
 NODE_CPUS[1]="43-85"
 NODE_CPUS[2]="86-128"
+
+# Task-scoped container lookup/teardown (never other users' containers).
+source "$REPO/harness/scripts/harbor_reap.sh"
 
 cd "$HARNESS"
 
@@ -45,8 +50,8 @@ run_node() {
 
     mkdir -p "$OUTDIR/$LABEL"
 
-    # Clean leftovers
-    docker ps -a --filter "label=com.docker.compose.project" -q | xargs -r docker rm -f 2>/dev/null || true
+    # Clean leftovers of this task's trials
+    reap_harbor_containers "$TASK_PATH"
 
     # Start Harbor in background
     $HARBOR run \
@@ -60,7 +65,7 @@ run_node() {
     echo "Waiting for container to start..."
     CONTAINER_ID=""
     for i in $(seq 1 60); do
-        CONTAINER_ID=$(docker ps --filter "label=com.docker.compose.project" --format "{{.ID}}" 2>/dev/null | head -1)
+        read -r CONTAINER_ID < <(harbor_container_ids "$TASK_PATH") || true
         if [ -n "$CONTAINER_ID" ]; then
             break
         fi

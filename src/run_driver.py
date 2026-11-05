@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any, List, Mapping, Optional, Sequence
 
 from src.protocols import discover_analyzers, discover_measurements
-from src.runner import RunContext, track_span
+from src.runner import _PMU_DENIED_ATTR, RunContext, track_span
 import tempfile
 
 # Scratch root for run artifacts. gettempdir() honours TMPDIR and falls
@@ -85,6 +85,10 @@ class RunConfig:
     preresolved_tasks: Optional[Sequence[Any]] = None
     proxy_port: Optional[int] = None
     stream_metadata: Optional[Mapping[str, Any]] = None
+    # Set by run-streams when more than one slot shares the node: every
+    # concurrent run would otherwise store the same node-wide readings (perf -a,
+    # /proc/stat) as its own task's. Excluded layers are reported, not dropped.
+    exclude_node_scoped: bool = False
 
 
 @dataclass
@@ -137,14 +141,44 @@ class RunCoverage:
         return out
 
 
+_NODE_SCOPE_EXCLUDED_ATTR = "_node_scope_excluded"
+_NODE_SCOPE_EXCLUDED_REASON = (
+    "excluded: node-wide layer, and concurrent runs share this node, so its "
+    "readings would be charged to every one of them"
+)
+
+
+def _split_node_scoped(measurements: dict, cfg: RunConfig) -> tuple:
+    """(probes to register, names excluded) for ``cfg.exclude_node_scoped``.
+
+    Excluded probes are stamped rather than forgotten, so the coverage line and
+    the run's metadata say why the layer is silent.
+    """
+    if not cfg.exclude_node_scoped:
+        return list(measurements.values()), []
+    kept, excluded = [], []
+    for name, probe in sorted(measurements.items()):
+        if getattr(probe, "node_scoped", False):
+            setattr(probe, _NODE_SCOPE_EXCLUDED_ATTR, _NODE_SCOPE_EXCLUDED_REASON)
+            excluded.append(name)
+        else:
+            kept.append(probe)
+    return kept, excluded
+
+
 def _measurement_skip_reason(probe: Any) -> str:
     """Best available explanation for a probe that emitted no records.
 
     Probes signal unavailability inconsistently — ``_available=False`` (l3_perf,
     emon, perfspect), or no flag at all (the l1_* probes, which always work). We
     read the flag when present and otherwise report the honest thing: it was
-    asked and produced nothing.
+    asked and produced nothing. A deliberate exclusion or a lost PMU election
+    outranks both: such a probe was never started.
     """
+    for attr in (_NODE_SCOPE_EXCLUDED_ATTR, _PMU_DENIED_ATTR):
+        reason = getattr(probe, attr, None)
+        if reason:
+            return reason
     if getattr(probe, "_available", True) is False:
         return "unavailable on this host (tool/driver/permission)"
     return "no records for any span"
@@ -440,14 +474,19 @@ def run_benchmark(cfg: RunConfig, *, store: Any = None, stamp: Optional[int] = N
     invoker = _build_invoker(cfg)
     measurements = discover_measurements()
     analyzers = discover_analyzers()
+    registered, node_scoped_excluded = _split_node_scoped(measurements, cfg)
+    scope_meta = (
+        {"node_scoped_layers_excluded": node_scoped_excluded}
+        if cfg.exclude_node_scoped else {}
+    )
 
     out = cfg.output_dir or Path(f"{_TMP}/agentsysperf_scratch/{run_id}")
     ctx = RunContext(
         run_id=run_id,
-        measurements=list(measurements.values()),
+        measurements=registered,
         output_dir=out,
         result_store=store,
-        run_metadata=_run_metadata(cfg, stamp),
+        run_metadata={**_run_metadata(cfg, stamp), **scope_meta},
     )
 
     # Optional replay/record proxy: point litellm at it via env (litellm reads
@@ -465,16 +504,21 @@ def run_benchmark(cfg: RunConfig, *, store: Any = None, stamp: Optional[int] = N
     _no_llm_benchmarks = {"synthetic_cpu", "synthetic-cpu"}
     _uses_llm = cfg.benchmark not in _no_llm_benchmarks
 
-    # One-shot PMU contention check (subprocess.run is ~5ms).
+    # One-shot PMU contention check (subprocess.run is ~5ms). Only when this
+    # run registered a node-wide layer, and only against real `perf` binaries:
+    # `pgrep -f "perf stat.*-a"` matched any command line containing that text,
+    # including the same check running in a sibling run-streams worker.
     try:
-        _ps = subprocess.run(
-            ["pgrep", "-a", "-f", "perf stat.*-a"],
-            capture_output=True, text=True, timeout=2,
-        )
-        _other_perf = [
-            ln for ln in _ps.stdout.splitlines()
-            if str(os.getpid()) not in ln
-        ]
+        _other_perf = []
+        if any(getattr(m, "node_scoped", False) for m in registered):
+            _ps = subprocess.run(
+                ["pgrep", "-a", "-x", "perf"],
+                capture_output=True, text=True, timeout=2,
+            )
+            _other_perf = [
+                ln for ln in _ps.stdout.splitlines()
+                if " stat " in f"{ln} " and " -a" in ln
+            ]
         if _other_perf:
             print(
                 f"  WARNING: {len(_other_perf)} other 'perf stat -a' process(es) "
@@ -602,7 +646,7 @@ def run_benchmark(cfg: RunConfig, *, store: Any = None, stamp: Optional[int] = N
             )
             store.persist_run(
                 run_id=run_id,
-                metadata={**_run_metadata(cfg, stamp),
+                metadata={**_run_metadata(cfg, stamp), **scope_meta,
                           "end_time": int(time.time()),
                           "total_tasks": len(specs), "passed_tasks": passed,
                           "execution_failures": execution_failures,

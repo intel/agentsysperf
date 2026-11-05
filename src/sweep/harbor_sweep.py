@@ -361,6 +361,10 @@ class HarborSweep:
         env = {**os.environ, **proxy_env}
         env["NO_PROXY"] = "*"
         env["no_proxy"] = "*"
+        # The harbor CLI sends usage telemetry unless HARBOR_TELEMETRY is set
+        # to an off value. Default it off for the runs we launch; an explicit
+        # HARBOR_TELEMETRY in the caller's environment still wins.
+        env.setdefault("HARBOR_TELEMETRY", "0")
         # Ensure the venv bin/ is on PATH so harbor CLI is found
         venv_bin = Path(sys.executable).parent
         env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"

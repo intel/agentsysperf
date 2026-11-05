@@ -122,6 +122,12 @@ def _check_proxy_ports(base_port: int, count: int) -> None:
         )
     for port in range(base_port, base_port + count):
         sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        # The proxy binds through uvicorn/asyncio, which sets SO_REUSEADDR on
+        # POSIX. A bare bind is stricter than that server: it refuses a port a
+        # previous run's proxy left in TIME_WAIT, so back-to-back run-streams
+        # invocations failed with nothing listening. A live listener is still
+        # refused (that would need SO_REUSEPORT).
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             sock.bind(("127.0.0.1", port))
         except OSError as exc:
@@ -701,6 +707,10 @@ def run_task_sized_streams(
         preresolved_tasks=tasks,
         adapter_kwargs={**(base_cfg.adapter_kwargs or {}), "force_build": False},
         stream_metadata=admission,
+        # With >1 slot the node-wide layers (perf -a, /proc/stat, perfspect)
+        # see every slot's work at once, and each worker would store that
+        # reading as its own task's. A single slot is a serial run.
+        exclude_node_scoped=len(planned_slots) > 1,
     )
 
     repeats = max(1, math.ceil(stream_multiple * len(planned_slots) / len(tasks)))

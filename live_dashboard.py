@@ -23,10 +23,19 @@ from pathlib import Path as _Path
 sys.path.insert(0, str(_Path(__file__).resolve().parent))
 
 import json
+import tempfile
 import time
 import streamlit as st
 import plotly.graph_objects as go
 from pathlib import Path
+
+# Scratch root for run artifacts. gettempdir() honours TMPDIR and falls
+# back to "/tmp", so this resolves to the same paths as the hardcoded
+# /tmp literals it replaced while no longer pinning output to a
+# world-writable directory on systems that configure TMPDIR elsewhere.
+# Defined with the imports because Streamlit runs this script top to
+# bottom and the module-level directory scans below read it.
+_TMP = tempfile.gettempdir()
 
 st.set_page_config(
     page_title="AgentSysPerf Live",
@@ -564,13 +573,6 @@ from src.dashboard.scaling_views import (
     per_task_profile_figure,
     BOTTLENECK_STYLE,
 )
-import tempfile
-
-# Scratch root for run artifacts. gettempdir() honours TMPDIR and falls
-# back to "/tmp", so this resolves to the same paths as the hardcoded
-# /tmp literals it replaced while no longer pinning output to a
-# world-writable directory on systems that configure TMPDIR elsewhere.
-_TMP = tempfile.gettempdir()
 
 # Find the most recent sweep. Sweeps now write to the canonical store
 # (ResultStore.open()); legacy per-dir /tmp DBs are a fallback. ALWAYS open

@@ -3047,7 +3047,7 @@ elif demo_page in ("Terminal-Bench::Scaling", "Tau-Bench::Scaling", "SWE-Bench::
         try:
             from src.platform.detect import detect_platform
             _plat = detect_platform()
-            _plat_name = f"{_plat.uarch} ({_plat.physical_cores}C, {_plat.numa_nodes} NUMA)"
+            _plat_name = f"{_plat.microarchitecture} ({_plat.physical_cores}C, {_plat.numa_nodes} NUMA)"
         except Exception:
             _plat_name = "Detected Platform"
 

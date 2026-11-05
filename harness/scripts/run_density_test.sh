@@ -15,14 +15,21 @@ set -euo pipefail
 REPO="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 HARNESS="$REPO/harness"
 HARBOR="${HARBOR:-$REPO/.venv/bin/harbor}"
+# harbor sends usage telemetry unless HARBOR_TELEMETRY is off; default it off.
+export HARBOR_TELEMETRY="${HARBOR_TELEMETRY:-0}"
 DATASET="${DATASET:-$HARNESS/datasets/terminal-bench-2}"
 OUTDIR="${OUTDIR:-$HARNESS/results/density_test}"
 COMPOSE="${COMPOSE:-$HARNESS/configs/numa_node1.yml}"
-FIXTURE="${FIXTURE:-$REPO//path/to/your/fixture.jsonl}"
+# No default: the run replays one recorded trial, so it needs your own
+# recording (fixtures/README.md). Usage: FIXTURE=<path> ./run_density_test.sh
+FIXTURE="${FIXTURE:?set FIXTURE to a fixture recorded with terminus-2}"
 PROXY_PORT=4001
 CPUS="43-85"
 
 PERF_EVENTS="cycles,instructions,cache-references,cache-misses,branch-instructions,branch-misses,L1-dcache-load-misses,LLC-load-misses,context-switches,page-faults"
+
+# Task-scoped container lookup/teardown (never other users' containers).
+source "$REPO/harness/scripts/harbor_reap.sh"
 
 cd "$HARNESS"
 
@@ -74,8 +81,8 @@ run_density() {
 
     mkdir -p "$OUTDIR/$LABEL"
 
-    # Clean leftovers
-    docker ps -a --filter "label=com.docker.compose.project" -q | xargs -r docker rm -f 2>/dev/null || true
+    # Clean leftovers of this dataset's trials
+    reap_harbor_containers "$DATASET"/*/
 
     # Start perf stat monitoring node 1 CPUs
     perf stat -C "$CPUS" \
@@ -122,7 +129,7 @@ run_density() {
         > "$OUTDIR/$LABEL/docker_stats.txt" || true
 
     # Cleanup
-    docker ps -a --filter "label=com.docker.compose.project" -q | xargs -r docker rm -f 2>/dev/null || true
+    reap_harbor_containers "$DATASET"/*/
 
     echo "Results saved to $OUTDIR/$LABEL/"
     echo ""

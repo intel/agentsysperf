@@ -1,12 +1,14 @@
-# Plugin Development Guide — AgentSysPerf 0.1.0
+# Plugin Development Guide — AgentSysPerf 1.0
 
 AgentSysPerf is pluggable. External developers can ship benchmarks, measurements, analyzers, and optimization profiles without forking. This guide covers the entry-point system, plugin registration, and template examples.
+
+Every snippet below is written against `src/protocols.py`, the source of truth for the contracts. In the 1.0 releases the package is imported as `src` (`from src.protocols import ...`).
 
 ## Plugin Architecture Overview
 
 AgentSysPerf uses **Python entry points** for automatic plugin discovery. When you run `agentsysperf list`, the CLI enumerates every registered plugin across these groups:
 
-```python
+```text
 agentsysperf.benchmarks              # BenchmarkAdapter implementations
 agentsysperf.measurements            # Measurement implementations
 agentsysperf.analyzers               # Analyzer implementations
@@ -21,6 +23,8 @@ agentsysperf.report_generators       # ReportGenerator implementations
 2. An entry-point registration in `pyproject.toml`
 3. A `pip install` of your package into the same venv
 
+Discovery instantiates each plugin class with **no arguments** (`cls()`), so a plugin's `__init__` must not require any. Result stores are the exception: they are built with their `open()` classmethod.
+
 ---
 
 ## Quickstart: Write Your First Analyzer
@@ -28,41 +32,43 @@ agentsysperf.report_generators       # ReportGenerator implementations
 ### Step 1: Understand the Analyzer Protocol
 
 ```python
-from src.protocols import Analyzer, AnalysisResult, MeasurementRecord
+from src.protocols import AnalysisResult
+
 
 class MyAnalyzer:
     """Your custom analyzer."""
-    
+
     name: str = "my_analyzer"  # Unique ID (lowercase, no spaces)
     input_layers: frozenset = frozenset(["l1", "l3"])  # Which measurements it consumes
-    
+
     def analyze(self, records, *, context=None):
         """Pure function: records → verdicts.
-        
+
         Args:
             records: Sequence of MeasurementRecord objects
             context: Optional AnalysisContext (hardware SKU, baseline, profile)
-        
+
         Yields:
             AnalysisResult objects (one per span or one aggregate)
         """
         for record in records:
             if record.layer not in self.input_layers:
                 continue
-            
+
             # Your logic: extract features, compute verdict, yield result
             payload = record.payload
             verdict = "your_verdict"
             confidence = 0.92
             evidence = {"key": payload.get("some_metric")}
             recommendations = ["Action 1", "Action 2"]
-            
+
             yield AnalysisResult(
                 span_id=record.span_id,
                 verdict=verdict,
                 confidence=confidence,
                 evidence=evidence,
                 recommendations=recommendations,
+                analyzer_name=self.name,
             )
 ```
 
@@ -77,12 +83,11 @@ my_agentsysperf_plugin/
 
 `my_plugin/__init__.py`:
 ```python
-from src.protocols import AnalysisResult, MeasurementRecord
-
+# my_plugin/__init__.py
 class MyAnalyzer:
     name = "my_analyzer"
     input_layers = frozenset(["l1"])
-    
+
     def analyze(self, records, *, context=None):
         # Stub
         return []
@@ -95,7 +100,7 @@ name = "my-agentsysperf-plugin"
 version = "0.1.0"
 description = "My custom analyzer for AgentSysPerf"
 dependencies = [
-    "agentsysperf>=0.1.0",
+    "agentsysperf>=1.0",
 ]
 
 [project.entry-points."agentsysperf.analyzers"]
@@ -109,29 +114,33 @@ cd my_agentsysperf_plugin
 pip install -e .
 
 agentsysperf analyzers list
-# Output includes: my_analyzer (input_layers: l1)
+# The table gains a row:  my_analyzer │ l1 │ MyAnalyzer │ my_plugin
 ```
 
 ---
 
 ## Plugin Types & Examples
 
+The examples below live in your own package, `my_pkg`; the first line of each
+snippet names its file.
+
 ### 1. Writing an Analyzer
 
-**File:** `src/analyzers/my_analyzer.py`
-
 ```python
+# my_pkg/my_analyzer.py
 """MyAnalyzer — detects your custom bottleneck."""
 
-from typing import Iterable, Optional, Sequence
-from src.protocols import AnalysisResult, AnalysisContext, MeasurementRecord
+from typing import Dict, Iterable, Optional, Sequence
+
+from src.protocols import AnalysisContext, AnalysisResult, MeasurementRecord
+
 
 class MyAnalyzer:
-    """Classifies workload as type_A or type_B based on feature ratios."""
-    
+    """Classifies workload as type_a or type_b based on feature ratios."""
+
     name = "my_analyzer"
     input_layers = frozenset(["l3", "l1"])
-    
+
     def analyze(
         self,
         records: Sequence[MeasurementRecord],
@@ -139,26 +148,24 @@ class MyAnalyzer:
         context: Optional[AnalysisContext] = None,
     ) -> Iterable[AnalysisResult]:
         """Yield verdicts for each span."""
-        
+
         # Group records by span
-        by_span = {}
+        by_span: Dict[str, Dict[str, MeasurementRecord]] = {}
         for record in records:
-            if record.span_id not in by_span:
-                by_span[record.span_id] = {}
-            by_span[record.span_id][record.layer] = record
-        
+            by_span.setdefault(record.span_id, {})[record.layer] = record
+
         # Analyze each span
         for span_id, layers in by_span.items():
             l3_record = layers.get("l3")
-            l1_record = layers.get("l1")
-            
             if not l3_record:
                 continue  # Skip spans missing required layers
-            
+
             # Extract features
             ipc = l3_record.payload.get("ipc")
             cache_miss = l3_record.payload.get("cache_miss_pct")
-            
+            if ipc is None or cache_miss is None:
+                continue  # Not measured on this span; don't guess
+
             # Classify
             if ipc < 1.0 and cache_miss > 50:
                 verdict = "type_a"
@@ -166,7 +173,7 @@ class MyAnalyzer:
                 verdict = "type_b"
             else:
                 verdict = "type_unknown"
-            
+
             yield AnalysisResult(
                 span_id=span_id,
                 verdict=verdict,
@@ -176,9 +183,10 @@ class MyAnalyzer:
                     "cache_miss_pct": cache_miss,
                     "classification_rule": "rule_xyz",
                 },
-                recommendations=[
-                    "Recommendation for type_a" if verdict == "type_a" else "",
-                ],
+                recommendations=(
+                    ["Recommendation for type_a"] if verdict == "type_a" else []
+                ),
+                analyzer_name=self.name,
             )
 ```
 
@@ -193,52 +201,63 @@ my_analyzer = "my_pkg.my_analyzer:MyAnalyzer"
 
 ### 2. Writing a Measurement
 
-**File:** `src/measurements/my_measurement.py`
+A measurement has a `name` and a `layer` (the tag on every record it emits,
+which analyzers select on), and four lifecycle methods. AgentSysPerf creates
+one instance per run and calls them in this order:
+
+1. `start(*, run_id, output_dir)` once, when the run begins;
+2. `observe_span(*, span_id, kind, node_id)` when each span opens;
+3. `finalize_span(span_id)` when that span closes; it returns the span's records;
+4. `stop()` once, at the end of the run; it returns any run-wide records.
 
 ```python
-"""MyMeasurement — custom hardware probe."""
+# my_pkg/my_measurement.py
+"""MyMeasurement — per-span delta of a system counter."""
 
-from dataclasses import dataclass
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, Iterable
 
-from src.protocols import Measurement, MeasurementRecord
-from src.runner import RunContext
+from src.protocols import MeasurementRecord
 
-@dataclass
-class MyMeasurementRecord(MeasurementRecord):
-    """Concrete record type for MyMeasurement."""
-    pass
 
 class MyMeasurement:
     """Collects custom metrics during benchmark spans."""
-    
-    name = "my_measurement"
-    
-    def __init__(self, context: RunContext):
-        """Initialize the probe with access to run metadata."""
-        self.context = context
-    
-    def start_span(self, span_id: str, **metadata) -> None:
-        """Called when a span begins."""
-        # E.g., read baseline system state
-        self.span_start_state = self._read_system_state()
-    
-    def end_span(self, span_id: str) -> MeasurementRecord:
-        """Called when a span ends. Return a measurement record or None."""
-        # E.g., compute delta from start to end
-        end_state = self._read_system_state()
-        delta = {
-            "my_metric_1": end_state["metric1"] - self.span_start_state["metric1"],
-            "my_metric_2": end_state["metric2"],
-        }
-        
-        return MyMeasurementRecord(
-            run_id=self.context.run_id,
+
+    name = "my_measurement"   # must match the entry-point name
+    layer = "my_layer"        # tag on every record this probe emits
+
+    def __init__(self) -> None:
+        self._run_id = ""
+        self._open: Dict[str, Dict[str, Any]] = {}
+
+    def start(self, *, run_id: str, output_dir: Path) -> None:
+        """Called once when the run begins."""
+        self._run_id = run_id
+
+    def observe_span(self, *, span_id: str, kind: str, node_id: str) -> None:
+        """Called when a span opens: take the baseline."""
+        self._open[span_id] = self._read_system_state()
+
+    def finalize_span(self, span_id: str) -> Iterable[MeasurementRecord]:
+        """Called when the span closes: return zero or more records for it."""
+        start = self._open.pop(span_id, None)
+        if start is None:
+            return []
+        end = self._read_system_state()
+        # MeasurementRecord is a frozen dataclass with exactly these 3 fields.
+        return [MeasurementRecord(
             span_id=span_id,
-            layer=self.name,
-            payload=delta,
-        )
-    
+            layer=self.layer,
+            payload={
+                "my_metric_1": end["metric1"] - start["metric1"],
+                "my_metric_2": end["metric2"],
+            },
+        )]
+
+    def stop(self) -> Iterable[MeasurementRecord]:
+        """Called once at the end of the run: return any run-wide records."""
+        return []
+
     def _read_system_state(self) -> Dict[str, Any]:
         """Example: read from /proc or system command."""
         # Your implementation: call APIs, parse files, run commands
@@ -258,75 +277,84 @@ my_measurement = "my_pkg.my_measurement:MyMeasurement"
 
 ### 3. Writing a Benchmark Adapter
 
-**File:** `src/benchmarks/my_benchmark.py`
-
 ```python
+# my_pkg/my_benchmark.py
 """MyBenchmark — custom workload adapter."""
 
-from typing import List, Optional
-from src.protocols import BenchmarkAdapter, TaskSpec, TaskResult
+from typing import Any, Callable, Dict, Iterable, Optional, Sequence
+
+from src.protocols import AgentInvoker, TaskResult, TaskSpec
+
+_TASKS = [
+    TaskSpec(
+        id="task_1",
+        instruction="Solve problem A",
+        category="reasoning",
+        difficulty="easy",
+        cpu_budget=1,
+        memory_mb=2048,
+        timeout_s=300,
+    ),
+    TaskSpec(
+        id="task_2",
+        instruction="Solve problem B",
+        category="reasoning",
+        difficulty="hard",
+        cpu_budget=2,
+        memory_mb=4096,
+        timeout_s=600,
+    ),
+]
+
 
 class MyBenchmark:
     """Adapter for your custom benchmark suite."""
-    
-    name = "my_benchmark"
-    
-    def __init__(self, context=None):
-        """Initialize. Context may include CLI args or config."""
-        self.context = context
-    
-    def list_tasks(self) -> List[TaskSpec]:
-        """Return all available tasks.
-        
-        Each TaskSpec includes id, instruction, difficulty, timeout, etc.
-        """
-        return [
-            TaskSpec(
-                id="task_1",
-                instruction="Solve problem A",
-                category="reasoning",
-                difficulty="easy",
-                cpu_budget=1,
-                memory_mb=2048,
-                timeout_s=300,
-            ),
-            TaskSpec(
-                id="task_2",
-                instruction="Solve problem B",
-                category="reasoning",
-                difficulty="hard",
-                cpu_budget=2,
-                memory_mb=4096,
-                timeout_s=600,
-            ),
-        ]
-    
-    def run_task(self, task: TaskSpec, agent_invoker) -> TaskResult:
-        """Execute a task and return result.
-        
-        Args:
-            task: One TaskSpec from list_tasks()
-            agent_invoker: AgentInvoker (call it to invoke LLM, tools, etc.)
-        
-        Returns:
-            TaskResult with passed (bool), reward (float), error (str)
+
+    name = "my_benchmark"   # must match the entry-point name
+    version = "0.1.0"       # adapter version, not the dataset version
+
+    def list_tasks(
+        self,
+        *,
+        include: Optional[Sequence[str]] = None,
+        exclude: Optional[Sequence[str]] = None,
+        limit: Optional[int] = None,
+    ) -> Iterable[TaskSpec]:
+        """Yield the tasks that pass the filters, at most `limit` of them."""
+        count = 0
+        for task in _TASKS:
+            if include is not None and task.id not in include:
+                continue
+            if exclude is not None and task.id in exclude:
+                continue
+            if limit is not None and count >= limit:
+                return
+            count += 1
+            yield task
+
+    def run_task(
+        self,
+        task: TaskSpec,
+        *,
+        agent_invoker: AgentInvoker,
+        on_step: Optional[Callable[[Dict[str, Any]], None]] = None,
+    ) -> TaskResult:
+        """Execute a task and return its verdict.
+
+        `agent_invoker` is supplied by the runner; delegate to it rather than
+        creating your own LLM client. `on_step`, if given, is called per turn.
         """
         try:
-            # Invoke agent with task instruction
             response = agent_invoker.invoke(
                 task.instruction,
-                tools=[],  # your tools here
+                metadata={"category": task.category},
+                session_hint=task.id,
             )
-            
-            # Grade response
-            passed = self._grade(response, task.id)
-            reward = 1.0 if passed else 0.5
-            
+            passed = self._grade(response)
             return TaskResult(
                 task_id=task.id,
                 passed=passed,
-                reward=reward,
-                error=None,
+                reward=1.0 if passed else 0.0,
             )
         except Exception as e:
             return TaskResult(
@@ -335,11 +363,14 @@ class MyBenchmark:
                 reward=0.0,
                 error=str(e),
             )
-    
-    def _grade(self, response: str, task_id: str) -> bool:
-        """Check if response is correct."""
+
+    def teardown(self) -> None:
+        """Release containers, temp dirs, sandboxes. Nothing to release here."""
+
+    def _grade(self, response: Any) -> bool:
+        """Check if the response is correct."""
         # Your grading logic
-        return "success" in response.lower()
+        return "success" in str(response).lower()
 ```
 
 **Register in `pyproject.toml`:**
@@ -349,49 +380,94 @@ class MyBenchmark:
 my_benchmark = "my_pkg.my_benchmark:MyBenchmark"
 ```
 
-**Integration:** Run with:
-```bash
-agentsysperf run -b my_benchmark --num-tasks 2
+**Integration:** a registered adapter is listed by `agentsysperf benchmarks list`.
+`agentsysperf run` drives only the built-in `synthetic_cpu` and `terminal-bench`
+adapters today, so drive yours from Python, the way the runner does. Open the
+measurement span around `run_task`, not around `agent_invoker.invoke`:
+
+```python
+# run_my_benchmark.py
+from src.measurements.l1_subspan import L1SubSpanMeasurement
+from src.runner import RunContext, track_span
+from src.testing.noop_invoker import NoOpAgentInvoker  # stand-in; use your AgentInvoker
+
+from my_pkg.my_benchmark import MyBenchmark
+
+adapter = MyBenchmark()
+invoker = NoOpAgentInvoker()
+
+# Add more Measurement instances here, or every installed one with
+# list(src.protocols.discover_measurements().values()).
+with RunContext(measurements=[L1SubSpanMeasurement()]) as ctx:
+    for task in adapter.list_tasks(limit=2):
+        with track_span(ctx, f"{ctx.run_id}::{task.id}", kind="my_benchmark", node_id=task.id):
+            result = adapter.run_task(task, agent_invoker=invoker)
+        print(task.id, "passed" if result.passed else "failed")
+adapter.teardown()
+
+print(len(ctx.records), "measurement records in", ctx.output_dir)
 ```
 
 ---
 
 ### 4. Writing an Optimization Profile
 
-**File:** `src/optimization_profiles/my_profile.py`
+A profile has a `name`, an `is_baseline` flag (True only for `base`), and two
+methods. `apply()` projects the profile onto a SUT configuration and returns
+the new configuration; it raises when the host cannot satisfy the profile.
+`verify_engaged()` reads counters through a `HardwareTelemetryPlugin` and
+returns the engagement verdict.
 
 ```python
-"""MyProfile — a system tuning configuration."""
+# my_pkg/my_profile.py
+"""MyProfile — keep the SUT on one NUMA node, and prove it stayed there."""
 
-from src.protocols import OptimizationProfilePlugin, HardwareTelemetryPlugin
+from typing import Any, Dict
+
+from src.protocols import HardwareTelemetryPlugin
+
 
 class MyProfile:
-    """Enables custom CPU/memory/I/O tuning."""
-    
+    """Pins the SUT to NUMA node 0."""
+
     name = "my_profile"
-    
-    def apply(self, telemetry: HardwareTelemetryPlugin) -> None:
-        """Apply the profile (tune OS, CPU, memory)."""
-        # Example: set CPU governor, enable turbo, tune NUMA
-        # This is pseudo-code; real impl would use subprocess/sysfs
-        subprocess.run(["echo", "performance"], check=True)
-        subprocess.run(["echo", "1"], check=True)  # enable turbo
-    
-    def verify_engaged(self, telemetry: HardwareTelemetryPlugin) -> bool:
-        """Verify the profile is actually active via telemetry.
-        
-        Returns True if counters confirm engagement; False otherwise.
-        IMPORTANT: Do not assume. Measure.
-        """
-        # Read counters from telemetry
-        counters = telemetry.read_counters()
-        
-        # Check: is turbo active?
-        turbo_freq = counters.get("turbo_freq_mhz")
-        if turbo_freq < 3000:
-            return False  # Turbo not engaged
-        
-        return True
+    is_baseline = False
+
+    # Semantic metric names (not raw PMU event names) -> minimum value. A
+    # telemetry plugin has to advertise and compute exactly these names.
+    verify_counters = {"local_dram_access_ratio": 0.9}
+
+    def apply(self, *, sut_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Return a copy of the SUT config with this profile's choices layered in."""
+        out = dict(sut_config)
+        out["numactl"] = ["--cpunodebind=0", "--membind=0"]
+        return out
+
+    def verify_engaged(
+        self,
+        *,
+        telemetry: HardwareTelemetryPlugin,
+        run_id: str,
+        warmup_done: bool = True,
+    ) -> Dict[str, Any]:
+        """Read the counters and prove the claimed optimization ran."""
+        missing = [c for c in self.verify_counters if c not in telemetry.available_events]
+        if missing:
+            # Abort, don't degrade: an unmeasurable claim is not "engaged".
+            raise RuntimeError(f"{self.name}: telemetry does not advertise {missing}")
+
+        reading = telemetry.read_counters(list(self.verify_counters), window_s=1.0)
+        failures = []
+        for counter, minimum in self.verify_counters.items():
+            value = reading.values.get(counter)
+            if value is None or value < minimum:
+                failures.append(f"{counter}={value} below min {minimum}")
+        return {
+            "engaged": not failures,
+            "counters": dict(reading.values),
+            "thresholds": dict(self.verify_counters),
+            "failures": failures,
+        }
 ```
 
 **Register in `pyproject.toml`:**
@@ -401,7 +477,9 @@ class MyProfile:
 my_profile = "my_pkg.my_profile:MyProfile"
 ```
 
-**Integrity principle:** "Measured not assumed." Every claim (`name="my_profile"` enables turbo) must be verified by `verify_engaged()` reading actual counters. If a counter is not advertised by telemetry, raise an error (abort-don't-degrade).
+**Integrity principle:** "Measured not assumed." Every claim (`name="my_profile"` keeps memory node-local) must be verified by `verify_engaged()` reading actual counters. If a counter is not advertised by telemetry, raise an error (abort-don't-degrade).
+
+`agentsysperf run` does not apply or verify profiles yet; `examples/run_profile_verify.py` exercises `verify_engaged()` against the installed telemetry.
 
 ---
 
@@ -419,8 +497,8 @@ agentsysperf list
 If your plugin doesn't appear:
 
 ```bash
-# Enable debug logging
-agentsysperf list -v
+# A plugin that fails to load prints a warning and its traceback on stderr
+agentsysperf analyzers list
 
 # Check sys.path includes your package
 python -c "import my_pkg; print(my_pkg.__file__)"
@@ -434,7 +512,9 @@ pip show -f my_agentsysperf_plugin
 A plugin that crashes on import is **logged and skipped**, not raised. This allows third-party plugins to fail without breaking the CLI.
 
 ```
-WARNING: Plugin 'my_analyzer' failed to load: ImportError: no module named 'foo'
+AgentSysPerf could not load agentsysperf.analyzers plugin 'my_analyzer' — skipping
+Traceback (most recent call last):
+  ...
 ```
 
 ---
@@ -446,27 +526,26 @@ WARNING: Plugin 'my_analyzer' failed to load: ImportError: no module named 'foo'
 ```python
 # tests/test_my_analyzer.py
 
-import pytest
 from src.protocols import MeasurementRecord
 from my_pkg.my_analyzer import MyAnalyzer
+
 
 def test_my_analyzer_classifies_correctly():
     """Verify verdict logic."""
     analyzer = MyAnalyzer()
-    
-    # Create mock records
+
+    # Create a record. MeasurementRecord has exactly span_id, layer, payload.
     record = MeasurementRecord(
-        run_id="test_run",
         span_id="span_1",
         layer="l3",
         payload={"ipc": 0.8, "cache_miss_pct": 60},
     )
-    
+
     # Run analysis
     verdicts = list(analyzer.analyze([record]))
-    
+
     assert len(verdicts) == 1
-    assert verdicts[0].verdict == "memory_bound"
+    assert verdicts[0].verdict == "type_a"
     assert verdicts[0].confidence > 0.5
 ```
 
@@ -476,11 +555,13 @@ def test_my_analyzer_classifies_correctly():
 # Install your plugin
 pip install -e my_agentsysperf_plugin
 
-# Run a benchmark and verify your plugin fires
+# Run a benchmark and verify your plugin fires. The run prints
+# "analyzers N/M emitted (...)" and names any analyzer that stayed silent.
 agentsysperf run --benchmark synthetic_cpu --num-tasks 1
 
-# Check plugin output
-agentsysperf db show <run_id> | grep "my_analyzer"
+# The report's "Analyzer verdicts" table lists every verdict, yours included
+agentsysperf report <run_id> --format md --out report.md
+grep my_analyzer report.md
 ```
 
 ---
@@ -494,11 +575,12 @@ All Protocols are **SemVer-stable as of 0.1.0**. Signatures will not break at MI
 | Protocol | Module | Required Attributes | Required Methods |
 |----------|--------|----------------------|------------------|
 | `Analyzer` | `src.protocols` | `name: str`, `input_layers: frozenset` | `analyze(records, *, context=None)` |
-| `Measurement` | `src.protocols` | `name: str` | `start_span(span_id, **metadata)`, `end_span(span_id)` |
-| `BenchmarkAdapter` | `src.protocols` | `name: str` | `list_tasks()`, `run_task(task, agent_invoker)` |
-| `OptimizationProfilePlugin` | `src.protocols` | `name: str` | `apply(telemetry)`, `verify_engaged(telemetry)` |
+| `Measurement` | `src.protocols` | `name: str`, `layer: str` | `start(*, run_id, output_dir)`, `observe_span(*, span_id, kind, node_id)`, `finalize_span(span_id)`, `stop()` |
+| `BenchmarkAdapter` | `src.protocols` | `name: str`, `version: str` | `list_tasks(*, include=None, exclude=None, limit=None)`, `run_task(task, *, agent_invoker, on_step=None)`, `teardown()` |
+| `OptimizationProfilePlugin` | `src.protocols` | `name: str`, `is_baseline: bool` | `apply(*, sut_config)`, `verify_engaged(*, telemetry, run_id, warmup_done=True)` |
+| `HardwareTelemetryPlugin` | `src.protocols` | `name: str`, `available_events: frozenset` | `read_counters(events, *, window_s=1.0, target=None)` |
 
-See `src/protocols.py` for full signatures.
+See `src/protocols.py` for full signatures, including `AgentInvoker`, `ResultStore` and `ReportGenerator`.
 
 ---
 
@@ -506,8 +588,9 @@ See `src/protocols.py` for full signatures.
 
 ### ✓ Do
 
-- **Read the input layers you declare.** If `input_layers = frozenset(["l3"])`, your analyzer will only receive L3 records.
+- **Read the input layers you declare.** If `input_layers = frozenset(["l3"])`, filter on it: `analyze()` receives all of a run's records, so skip layers you did not declare.
 - **Return early if layers are missing.** Don't raise; yield no result.
+- **Set `analyzer_name=self.name` on every `AnalysisResult`.** The store keys verdicts by run, span and analyzer name, and the report's Analyzer column shows it.
 - **Make analyzers stateless.** `analyze()` should be a pure function; no side effects.
 - **Measure, don't assume.** In `verify_engaged()`, actually read counters; don't assume config took effect.
 - **Use sensible confidence scores.** 0.9+ = very confident; 0.5–0.7 = boundary case; 0.3–0.5 = uncertain.
@@ -527,50 +610,61 @@ See `src/protocols.py` for full signatures.
 
 Here's a complete, working example of a measurement + analyzer pair:
 
-**measurement.py:**
+**my_pkg/latency_measurement.py:**
 ```python
-from dataclasses import dataclass
+# my_pkg/latency_measurement.py
 import time
+from pathlib import Path
+from typing import Dict, Iterable
+
 from src.protocols import MeasurementRecord
 
-@dataclass
-class LatencyRecord(MeasurementRecord):
-    pass
 
 class LatencyMeasurement:
     name = "latency"
-    
-    def __init__(self, context):
-        self.context = context
-        self.span_times = {}
-    
-    def start_span(self, span_id, **metadata):
-        self.span_times[span_id] = time.time()
-    
-    def end_span(self, span_id):
-        elapsed = time.time() - self.span_times.pop(span_id, time.time())
-        return LatencyRecord(
-            run_id=self.context.run_id,
+    layer = "latency"
+
+    def __init__(self) -> None:
+        self._t0: Dict[str, float] = {}
+
+    def start(self, *, run_id: str, output_dir: Path) -> None:
+        self._t0.clear()
+
+    def observe_span(self, *, span_id: str, kind: str, node_id: str) -> None:
+        self._t0[span_id] = time.monotonic()
+
+    def finalize_span(self, span_id: str) -> Iterable[MeasurementRecord]:
+        t0 = self._t0.pop(span_id, None)
+        if t0 is None:
+            return []
+        return [MeasurementRecord(
             span_id=span_id,
-            layer="latency",
-            payload={"elapsed_s": elapsed},
-        )
+            layer=self.layer,
+            payload={"elapsed_s": time.monotonic() - t0},
+        )]
+
+    def stop(self) -> Iterable[MeasurementRecord]:
+        return []
 ```
 
-**analyzer.py:**
+**my_pkg/latency_analyzer.py:**
 ```python
+# my_pkg/latency_analyzer.py
+from src.protocols import AnalysisResult
+
+
 class LatencyAnalyzer:
     name = "latency_anomaly"
     input_layers = frozenset(["latency"])
-    
+
     def analyze(self, records, *, context=None):
         latencies = [r.payload["elapsed_s"] for r in records if r.layer == "latency"]
         if not latencies:
             return
-        
+
         mean_latency = sum(latencies) / len(latencies)
         max_latency = max(latencies)
-        
+
         if max_latency > 2 * mean_latency:
             yield AnalysisResult(
                 span_id=None,
@@ -578,16 +672,17 @@ class LatencyAnalyzer:
                 confidence=0.8,
                 evidence={"mean": mean_latency, "max": max_latency},
                 recommendations=["Investigate tail latency; tune GC settings"],
+                analyzer_name=self.name,
             )
 ```
 
 **pyproject.toml:**
 ```toml
 [project.entry-points."agentsysperf.measurements"]
-latency = "my_pkg:LatencyMeasurement"
+latency = "my_pkg.latency_measurement:LatencyMeasurement"
 
 [project.entry-points."agentsysperf.analyzers"]
-latency_anomaly = "my_pkg:LatencyAnalyzer"
+latency_anomaly = "my_pkg.latency_analyzer:LatencyAnalyzer"
 ```
 
 ---
@@ -607,11 +702,11 @@ latency_anomaly = "my_pkg:LatencyAnalyzer"
 2. Check if-conditions in `analyze()` — are they too restrictive? Add debug logging.
 3. Run with `-v` (verbose) to see INFO-level diagnostics.
 
-**"verify_engaged() always returns False"**
+**"verify_engaged() never reports engaged"**
 
 1. Ensure the profile actually applied (check `/proc`, `/sys`, or system commands).
 2. Verify telemetry has access to the counter you're reading. Some counters need root or `perf_event_paranoid <= 1`.
-3. Add logging to `verify_engaged()` to see what counter value you're actually reading.
+3. Log the `counters` and `failures` it returns to see what values were actually read.
 
 ---
 
@@ -621,6 +716,6 @@ latency_anomaly = "my_pkg:LatencyAnalyzer"
 - **Design rationale:** `docs/methodology/DESIGN.md`
 - **Reference implementations:**
   - Analyzer: `src/analyzers/cpu_bound.py`
-  - Measurement: `src/measurements/l1_subspan.py`
-  - Benchmark: `src/benchmarks/synthetic_cpu.py`
+  - Measurement: `src/measurements/l1_subspan/`
+  - Benchmark: `src/benchmarks/synthetic_cpu/`
 - **Integrity principles:** README, *Integrity principles*

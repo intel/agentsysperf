@@ -35,7 +35,9 @@ llm_mode: "off"
 # Replay proxy settings
 proxy:
   port: 4001
-  fixture_file: "../fixtures/tb2_sonnet_replay/fixture.jsonl"
+  # Relative to harness/. The shipped file is a format placeholder whose
+  # lookups all miss (fixtures/README.md); point this at your own recording.
+  fixture_file: "../fixtures/tb2_model_replay/fixture.jsonl"
 
 # SLM settings (when llm_mode=slm)
 slm:

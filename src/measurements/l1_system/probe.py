@@ -117,6 +117,10 @@ class L1SystemMeasurement(NullMeasurement):
 
     name: str = "l1_system"
     layer: str = "l1_system"
+    #: Reads the whole node's /proc/stat, not this run's share of it. Concurrent
+    #: runs on one node each record the same load as their own (see
+    #: ``RunConfig.exclude_node_scoped``).
+    node_scoped: bool = True
 
     def __init__(self, *, sample_interval_s: float = 1.0) -> None:
         super().__init__()

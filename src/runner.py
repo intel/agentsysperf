@@ -40,6 +40,7 @@ create their own context.  Concurrent runs don't interfere.  The sampler
 from __future__ import annotations
 
 import logging
+import os
 import threading
 import time
 import uuid
@@ -60,10 +61,64 @@ _TMP = tempfile.gettempdir()
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "PMU_OWNER_ENV",
+    "PMU_OWNER_PRIORITY",
     "RunContext",
     "track_span",
     "SpanRecord",
 ]
+
+
+#: Which PMU-programming probe keeps the hardware counters when several are
+#: registered in one run (``pmu_exclusive = True``). They share one fixed set of
+#: counters: with ``l3_perf`` and ``perfspect`` both running on a serial
+#: Terminal-Bench run, every ``l3_perf`` hardware event dropped to 0% enabled at
+#: its minimum (mean 41-89%), so perf extrapolated each stored row from part of
+#: the window, and nothing in the row said so. Without perfspect: 100% on all.
+#:
+#: ``l3_perf`` leads because it drives plain ``perf`` and works on any vendor's
+#: CPU; ``perfspect`` computes Intel's TMA formulas. A cross-vendor default must
+#: not depend on one vendor's tooling. Choose otherwise with
+#: :data:`PMU_OWNER_ENV`.
+PMU_OWNER_PRIORITY = ("l3_perf", "perfspect")
+
+#: Names the PMU owner for this run (e.g. ``AGENTSYSPERF_PMU_OWNER=perfspect``),
+#: ahead of :data:`PMU_OWNER_PRIORITY`. Ignored when that probe cannot collect.
+PMU_OWNER_ENV = "AGENTSYSPERF_PMU_OWNER"
+
+#: Stamped on a probe that lost the PMU election; read by
+#: ``run_driver._measurement_skip_reason`` for the run's coverage line.
+_PMU_DENIED_ATTR = "_pmu_election_denied"
+
+
+def _probe_name(probe: Any) -> str:
+    return getattr(probe, "name", None) or type(probe).__name__
+
+
+def _pmu_rank(probe: Any) -> tuple:
+    """Sort key: the env-chosen owner, then :data:`PMU_OWNER_PRIORITY`, then by
+    name, so a third-party PMU probe never silently outranks the default and two
+    runs of one configuration elect the same owner."""
+    name = _probe_name(probe)
+    if name == os.environ.get(PMU_OWNER_ENV, "").strip():
+        return (0, 0, name)
+    try:
+        return (1, PMU_OWNER_PRIORITY.index(name), name)
+    except ValueError:
+        return (2, 0, name)
+
+
+def _pmu_can_collect(probe: Any) -> bool:
+    """A PMU probe's own ``pmu_available()``; one without the hook is assumed able."""
+    check = getattr(probe, "pmu_available", None)
+    if check is None:
+        return True
+    try:
+        return bool(check())
+    except Exception as exc:  # a check that crashed has not shown it can collect
+        logger.warning("PMU availability check for %r failed: %s",
+                       _probe_name(probe), exc)
+        return False
 
 
 # =============================================================================
@@ -396,11 +451,53 @@ class RunContext:
                 return True
         return False
 
+    def _elect_pmu_owner(self) -> None:
+        """Keep exactly one PMU-programming probe in this run; drop the rest.
+
+        Runs before anything starts: the damage is done by starting a second
+        collector on the same counters, not by its records. The losers are
+        stamped with a reason so the coverage line says another layer owns the
+        PMU instead of leaving a gap that reads as a broken probe.
+        """
+        pmu = [m for m in self._measurements if getattr(m, "pmu_exclusive", False)]
+        if len(pmu) < 2:
+            return
+        # A probe that cannot collect here must not win: it would stand down at
+        # start with every other PMU layer already dropped.
+        unable = {id(m) for m in pmu if not _pmu_can_collect(m)}
+        ranked = sorted(pmu, key=lambda m: (id(m) in unable, _pmu_rank(m)))
+        owner, losers = ranked[0], ranked[1:]
+        owner_name = _probe_name(owner)
+        logger.warning(
+            "%d PMU-programming probes registered; keeping %r and standing down "
+            "%s. They share one set of hardware counters, so running them "
+            "together time-slices the PMU and every row becomes a scaled "
+            "extrapolation. Set %s to choose the owner.",
+            len(pmu), owner_name,
+            ", ".join(repr(_probe_name(m)) for m in losers), PMU_OWNER_ENV,
+        )
+        for m in losers:
+            reason = (
+                f"cannot collect on this host (tool/driver/permission), so "
+                f"{owner_name} owns the PMU for this run"
+                if id(m) in unable else
+                f"another PMU layer ({owner_name}) owns the hardware counters "
+                f"for this run (set {PMU_OWNER_ENV}={_probe_name(m)} to choose "
+                f"this one); two PMU collectors time-slice the same counters"
+            )
+            try:
+                setattr(m, _PMU_DENIED_ATTR, reason)
+            except Exception:
+                logger.debug("could not stamp %r with the PMU denial", m)
+        drop = {id(m) for m in losers}
+        self._measurements = [m for m in self._measurements if id(m) not in drop]
+
     def start(self) -> None:
         """Start all measurements and the sampler (if needed)."""
         if self._started:
             return
         self.output_dir.mkdir(parents=True, exist_ok=True)
+        self._elect_pmu_owner()
 
         if self._needs_sampler():
             self._sampler = PsutilSampler(
